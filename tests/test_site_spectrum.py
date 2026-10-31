@@ -113,3 +113,23 @@ def test_bootstrap_errors_cover_truth_and_shrink_with_votes():
         assert np.mean(np.abs(est - truth) < 1.96 * err) > 0.85
         se[n_votes] = d["se_median_bootstrap"]
     assert se[240] < se[60]
+
+
+def test_index_rows_carry_chambers_and_unified_club(conn, tmp_path):
+    _chamber(conn, n_members=4, n_votes=5)
+    # a former member whose club used an older abbreviation for the same club name
+    pid = db.resolve_person(conn, "psp", "old", given_name="Old", family_name="Member", country="CZE")
+    conn.execute("INSERT INTO mandate (person_id, chamber, term, start_date, end_date) VALUES (?, 'psp', 'S', '2016-01-01', '2019-12-31')", (pid,))
+    conn.execute("INSERT INTO affiliation (person_id, chamber, kind, org_id, org_name, org_abbr, start_date, end_date)"
+                 " VALUES (?, 'psp', 'club', 'A0', 'A', 'A-old', '2016-01-01', '2019-12-31')", (pid,))
+    conn.commit()
+    site.build(conn, tmp_path / "out")
+    html = (tmp_path / "out" / "index.html").read_text()
+    raw = html.split('<script id="data" type="application/json">')[1].split("</script>")[0]
+    rows = {r["f"] + r["n"]: r for r in json.loads(raw.replace("<\\/", "</"))}
+    old = rows["MemberOld Member"]
+    assert old["a"] is False and old["h"] == ["psp"] and old["hc"] == []
+    assert old["k"] == "" and old["kl"] == "A"     # unified to the newest abbreviation
+    cur = next(r for r in rows.values() if r["a"])
+    assert cur["hc"] == ["psp"] and cur["k"] in ("A", "B")
+    assert 'data-ch="senat"' in html and 'aria-current="page"' in html

@@ -198,11 +198,20 @@ def num(x: float, digits: int = 2) -> str:
 
 
 UPDATED: str | None = None  # date of the last ingest, set by build()
+# psp.cz sometimes gives the same club a different abbreviation per term (ANO / ANO2011);
+# the index uses the most recent abbreviation for each club name so filters don't split it.
+CLUB_ABBR: dict[tuple[str, str], str] = {}
 
 
-def page(title: str, body: str, depth: int, description: str = "") -> str:
+NAV = (("politici", "index.html", "Politici"), ("spektrum", "spektrum/index.html", "Spektrum"),
+       ("metodika", "metodika.html", "Metodika"))
+
+
+def page(title: str, body: str, depth: int, description: str = "", nav: str = "politici") -> str:
     up = "../" * depth
-    updated = f" Stav dat k {fmt_date(UPDATED)}." if UPDATED else ""
+    updated = f"Stav dat k {fmt_date(UPDATED)}." if UPDATED else ""
+    cur = ' aria-current="page"'
+    links = "".join(f'<a href="{up}{href}"{cur if key == nav else ""}>{label}</a>' for key, href, label in NAV)
     return f"""<!doctype html>
 <html lang="cs">
 <head>
@@ -213,13 +222,13 @@ def page(title: str, body: str, depth: int, description: str = "") -> str:
 <link rel="stylesheet" href="{up}static/style.css">
 </head>
 <body>
-<header class="top"><a href="{up}index.html" class="brand">Czech PoliWiki</a>
-<nav><a href="{up}index.html">Politici</a><a href="{up}spektrum/index.html">Spektrum</a><a href="{up}metodika.html">Metodika</a></nav></header>
+<header class="top"><div class="top-in"><a href="{up}index.html" class="brand"><span class="mark" aria-hidden="true">PW</span>Czech PoliWiki</a>
+<nav>{links}</nav></div></header>
 <main>
 {body}
 </main>
-<footer>Data z oficiálních zdrojů (psp.cz, senat.cz, data.europarl.europa.eu), bez hodnocení a pořadí.{updated}
-<a href="{up}metodika.html">Jak se čísla počítají</a> · <a href="https://github.com/DShaker/czech-poliwiki">zdrojový kód</a></footer>
+<footer><div class="foot-in"><p>Data z oficiálních zdrojů (psp.cz, senat.cz, data.europarl.europa.eu), bez hodnocení a pořadí. {updated}</p>
+<p><a href="{up}metodika.html">Jak se čísla počítají</a> · <a href="https://github.com/DShaker/czech-poliwiki">Zdrojový kód</a></p></div></footer>
 </body>
 </html>
 """
@@ -312,6 +321,11 @@ def scatter_chart(points, names, links) -> str:
 def build(conn: sqlite3.Connection, out: str | Path) -> None:
     global UPDATED
     last = conn.execute("SELECT max(finished_at) FROM ingest_run").fetchone()[0]
+    CLUB_ABBR.clear()
+    for ch, name, abbr in conn.execute(
+            "SELECT chamber, org_name, org_abbr FROM affiliation WHERE kind IN ('club','ep_group') AND org_abbr IS NOT NULL"
+            " ORDER BY coalesce(start_date, '9999')"):
+        CLUB_ABBR[(ch, name)] = abbr
     UPDATED = last[:10] if last else None
     out = Path(out)
     if out.exists():
@@ -389,7 +403,7 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
     write_index(out, index_rows)
     write_spectrum_pages(out, terms, ideal, term_clubs, fits, all_names, links_from_s)
     (out / "metodika.html").write_text(page("Metodika · Czech PoliWiki", methodology(fits, terms), 0,
-                                            "Jak se počítají údaje o hlasování a umístění na spektru"), "utf-8")
+                                            "Jak se počítají údaje o hlasování a umístění na spektru", "metodika"), "utf-8")
     (out / ".nojekyll").write_text("")
     log.info("site: %d profiles written to %s", len(people), out)
 
@@ -408,10 +422,12 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
         if m["chamber"] not in chambers:
             chambers.append(m["chamber"])
     current = [m for m in mandates if not m["end_date"] or m["end_date"] >= datetime.now().date().isoformat()]
-    cur_club = None
+    cur_club = cur_label = club_chamber = None
     for a in affs:
         if a["kind"] in ("club", "ep_group") and not a["end_date"]:
             cur_club = a["org_abbr"] or a["org_name"]
+            cur_label = CLUB_ABBR.get((a["chamber"], a["org_name"]), cur_club)
+            club_chamber = a["chamber"]
 
     b = [f'<h1>{e(full_name(r))}</h1>']
     facts = []
@@ -519,19 +535,50 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
 </section>
 <script src="../static/votes.js" data-person="{e(links[pid].removesuffix(".html"))}.json"></script>''')
 
+    last_club = None
+    if not cur_club:
+        ended = [a for a in affs if a["kind"] in ("club", "ep_group") and a["end_date"]]
+        if ended:
+            a = max(ended, key=lambda a: a["end_date"])
+            last_club = CLUB_ABBR.get((a["chamber"], a["org_name"]), a["org_abbr"] or a["org_name"])
+            club_chamber = a["chamber"]
     meta = {"c": [CHAMBER_SHORT[m["chamber"]] + " " + term_label(m["chamber"], m["term"]) for m in mandates],
-            "k": cur_club or "", "a": bool(current)}
+            "k": cur_label or "", "a": bool(current),
+            "h": chambers, "hc": list(dict.fromkeys(m["chamber"] for m in current))}
+    if last_club:
+        meta["kl"] = last_club
+    if club_chamber:
+        meta["kh"] = club_chamber
     return "\n".join(b), meta
 
 
 def write_index(out: Path, rows) -> None:
-    body = f"""<h1>Politici</h1>
+    now = Counter(c for r in rows if r["a"] for c in r["hc"])
+    stats = "".join(f'<div class="stat"><span class="big">{now[c]}</span><span>{label}</span></div>'
+                    for c, label in (("psp", "poslanců"), ("senat", "senátorů"), ("ep", "europoslanců")) if now[c])
+    seg = "".join(f'<button type="button" data-ch="{c}">{label} <span class="n"></span></button>'
+                  for c, label in (("", "Vše"), ("psp", "Sněmovna"), ("senat", "Senát"),
+                                    ("ep", '<span class="long">Evropský parlament</span><span class="short">EP</span>')))
+    body = f"""<section class="hero"><h1>Politici</h1>
 <p class="lede">Poslanci, senátoři a čeští europoslanci: jak hlasovali, v jakém klubu seděli a co předložili.
 Bez hodnocení a pořadí, s odkazy na oficiální záznamy.</p>
-<div class="filters"><input type="search" id="q" placeholder="Hledat jméno nebo klub" aria-label="Hledat">
-<label><input type="checkbox" id="active" checked> jen současní</label></div>
-<p id="count" class="muted"></p>
-<div class="tablewrap"><table id="people"><thead><tr><th>Jméno</th><th>Klub / skupina</th><th>Mandáty</th></tr></thead><tbody></tbody></table></div>
+<div class="stats">{stats}</div></section>
+<section class="panel" aria-label="Filtry">
+<div class="searchrow"><input type="search" id="q" placeholder="Hledat jméno nebo klub" aria-label="Hledat jméno nebo klub" autocomplete="off">
+<label class="switch"><input type="checkbox" id="active" checked> <span>jen současní</span></label></div>
+<div class="seg" id="chamber" role="group" aria-label="Komora">{seg}</div>
+<div class="chips-wrap"><span class="chips-label">Klub / skupina</span><div class="chips" id="clubs" role="group" aria-label="Klub nebo skupina"></div></div>
+</section>
+<div class="listhead"><p id="count" class="muted" aria-live="polite"></p>
+<label class="sortsel">Řadit <select id="sort" aria-label="Řadit podle">
+<option value="name">podle příjmení</option><option value="club">podle klubu</option><option value="chamber">podle komory</option>
+</select></label></div>
+<div class="tablewrap card"><table id="people"><thead><tr>
+<th aria-sort="ascending"><button type="button" data-sort="name">Jméno</button></th>
+<th><button type="button" data-sort="chamber">Komora</button></th>
+<th><button type="button" data-sort="club">Klub / skupina</button></th>
+<th>Mandáty</th></tr></thead><tbody></tbody></table>
+<p id="empty" class="empty" hidden>Nikdo neodpovídá filtrům. <button type="button" id="reset" class="linklike">Zrušit filtry</button></p></div>
 <script id="data" type="application/json">{json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")}</script>
 <script src="static/search.js"></script>"""
     (out / "index.html").write_text(page("Czech PoliWiki", body, 0, "Neutrální přehled hlasování českých politiků"), "utf-8")
@@ -575,11 +622,11 @@ Správně předpovídá {pct(c2.get('correct'))} hlasů pro/proti (jedna dimenze
 <h2>Tabulka{' (čeští europoslanci)' if t.chamber == 'ep' else ''}</h2>
 <div class="tablewrap"><table><thead><tr><th>Jméno</th><th>Klub</th><th>Dimenze 1</th><th>95% interval</th><th>Dimenze 2</th><th>Hlasování</th></tr></thead>
 <tbody>{''.join(table)}</tbody></table></div>"""
-        (out / "spektrum" / f"{t.key}.html").write_text(page(f"Spektrum: {title}", body, 1), "utf-8")
+        (out / "spektrum" / f"{t.key}.html").write_text(page(f"Spektrum: {title}", body, 1, nav="spektrum"), "utf-8")
     (out / "spektrum" / "index.html").write_text(page("Spektrum · Czech PoliWiki", f"""<h1>Spektrum</h1>
 <p class="lede">Umístění členů každé komory zvlášť, odvozené jen z hlasování. Pozice z různých komor ani období nejsou
 na stejné stupnici a nedají se porovnávat. <a href="../metodika.html#spektrum">Metodika</a></p>
-<ul class="list">{''.join(items)}</ul>""", 1), "utf-8")
+<ul class="list">{''.join(items)}</ul>""", 1, nav="spektrum"), "utf-8")
 
 
 def _se_pair(f) -> str:
