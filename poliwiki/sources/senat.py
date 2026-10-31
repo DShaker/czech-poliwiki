@@ -29,8 +29,9 @@ SENAT = "https://www.senat.cz"
 TYP_SENAT = "79"
 TYP_SEN_KLUB = "90"
 PRAGUE = ZoneInfo("Europe/Prague")
-OPTIONS = {"pro": "yes", "proti": "no", "zdržel se": "abstain", "nepřítomen": "absent",
-           "nehlasoval": "not_voting", "omluven": "excused"}
+OPTIONS = {"pro": "yes", "proti": "no", "zdržel se": "abstain", "zdržela se": "abstain",
+           "nepřítomen": "absent", "nepřítomna": "absent", "nehlasoval": "not_voting",
+           "nehlasovala": "not_voting", "omluven": "excused", "omluvena": "excused"}
 OUTCOMES = {"Návrh byl přijat": "passed", "Návrh byl zamítnut": "rejected", "Zmatečné hlasování": "void"}
 DESC_RE = re.compile(r"^\s*(\d+)\s+-\s+(.*)\s+-\s+([^;-]+?)\s*;\s*Senát odhlasoval:\s*(.*?)\s*$", re.S)
 PRINT_RE = re.compile(r"^(N\s+)?\d+/\d+$")
@@ -204,7 +205,8 @@ def ingest_votes(conn, pid_web: str, person_id: int, term: int, refresh: bool) -
     for v in items:
         if v["term"] != str(term):
             continue
-        ev = f"senat:{v['id']}"
+        # the feed guid is per senator; a vote is identified by term, session and number
+        ev = f"senat:{term}:{v['session']}:{v['number']}"
         bill_id = None
         if v["print"]:
             bill_id = f"senat:{term}:{v['print'].replace(' ', '')}"
@@ -218,7 +220,7 @@ def ingest_votes(conn, pid_web: str, person_id: int, term: int, refresh: bool) -
             " outcome, bill_id, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (ev, "senat", str(term), v["date"], v["time"], v["session"], v["number"], v["title"],
              v["motion"], v["outcome"], bill_id,
-             f"{SENAT}/xqw/xervlet/pssenat/hlasy?G={v['id']}"),
+             f"{SENAT}/xqw/xervlet/pssenat/hlasy?O={term}&S={v['session']}"),
         )
         n_ev += cur.rowcount
         conn.execute(

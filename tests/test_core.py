@@ -103,7 +103,7 @@ FEED = """<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>
 <pubDate>Wed, 21 Oct 2026 15:30:21 GMT</pubDate></item>
 <item><guid isPermaLink="false">SENAT_PCR_H12149990</guid>
 <title>15 - 31 - 2 - 31. schůze Senátu</title>
-<description>2 - schválit pořad - zdržel se; Senát odhlasoval: Návrh byl zamítnut</description>
+<description>2 - schválit pořad - zdržela se; Senát odhlasoval: Návrh byl zamítnut</description>
 <pubDate>Wed, 21 Oct 2026 22:30:00 GMT</pubDate></item>
 </channel></rss>""".encode()
 
