@@ -422,11 +422,12 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
         if m["chamber"] not in chambers:
             chambers.append(m["chamber"])
     current = [m for m in mandates if not m["end_date"] or m["end_date"] >= datetime.now().date().isoformat()]
-    cur_club = cur_label = None
+    cur_club = cur_label = club_chamber = None
     for a in affs:
         if a["kind"] in ("club", "ep_group") and not a["end_date"]:
             cur_club = a["org_abbr"] or a["org_name"]
             cur_label = CLUB_ABBR.get((a["chamber"], a["org_name"]), cur_club)
+            club_chamber = a["chamber"]
 
     b = [f'<h1>{e(full_name(r))}</h1>']
     facts = []
@@ -540,11 +541,14 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
         if ended:
             a = max(ended, key=lambda a: a["end_date"])
             last_club = CLUB_ABBR.get((a["chamber"], a["org_name"]), a["org_abbr"] or a["org_name"])
+            club_chamber = a["chamber"]
     meta = {"c": [CHAMBER_SHORT[m["chamber"]] + " " + term_label(m["chamber"], m["term"]) for m in mandates],
             "k": cur_label or "", "a": bool(current),
             "h": chambers, "hc": list(dict.fromkeys(m["chamber"] for m in current))}
     if last_club:
         meta["kl"] = last_club
+    if club_chamber:
+        meta["kh"] = club_chamber
     return "\n".join(b), meta
 
 
@@ -553,7 +557,8 @@ def write_index(out: Path, rows) -> None:
     stats = "".join(f'<div class="stat"><span class="big">{now[c]}</span><span>{label}</span></div>'
                     for c, label in (("psp", "poslanců"), ("senat", "senátorů"), ("ep", "europoslanců")) if now[c])
     seg = "".join(f'<button type="button" data-ch="{c}">{label} <span class="n"></span></button>'
-                  for c, label in (("", "Vše"), ("psp", "Sněmovna"), ("senat", "Senát"), ("ep", "Evropský parlament")))
+                  for c, label in (("", "Vše"), ("psp", "Sněmovna"), ("senat", "Senát"),
+                                    ("ep", '<span class="long">Evropský parlament</span><span class="short">EP</span>')))
     body = f"""<section class="hero"><h1>Politici</h1>
 <p class="lede">Poslanci, senátoři a čeští europoslanci: jak hlasovali, v jakém klubu seděli a co předložili.
 Bez hodnocení a pořadí, s odkazy na oficiální záznamy.</p>

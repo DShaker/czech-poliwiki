@@ -123,6 +123,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 .chips-label { font-size: 13px; color: var(--muted); padding-top: 6px; white-space: nowrap; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips button { padding: 4px 11px; border-radius: 999px; font-size: 14px; background: var(--surface); }
+.chipgroup { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; align-self: center; margin: 0 2px 0 8px; }
+.seg .short { display: none; }
 .chips button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--surface); }
 .chips button[aria-pressed="true"] .n { color: inherit; opacity: .7; }
 .listhead { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin: 4px 0; }
@@ -168,6 +170,8 @@ svg .medmark { fill: var(--ink); stroke: var(--surface); stroke-width: 2; }
   .seg, .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; }
   .seg button, .chips button { flex: none; }
   .panel { padding: 12px; }
+  .seg .long { display: none; }
+  .seg .short { display: inline; }
   #people thead { display: none; }
   #people tr { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
   #people tbody tr:last-child { border-bottom: 0; }

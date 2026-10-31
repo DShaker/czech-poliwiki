@@ -68,11 +68,21 @@
     allInCh.forEach((p) => tally.set(p.club || NONE, 0));
     inCh.forEach((p) => tally.set(p.club || NONE, tally.get(p.club || NONE) + 1));
     if (st.club && !tally.has(st.club)) st.club = "";
-    const clubs = [...tally.keys()].sort((a, b) => (a === NONE) - (b === NONE) || coll.compare(a, b));
-    chips.innerHTML = [`<button type="button" data-club="" aria-pressed="${!st.club}">všechny</button>`]
-      .concat(clubs.map((c) => `<button type="button" data-club="${esc(c)}" aria-pressed="${c === st.club}">`
-        + `${c === NONE ? "bez klubu" : esc(c)} <span class="n">${tally.get(c)}</span></button>`))
-      .join("");
+    // with all chambers shown, group the chips by the chamber the club belongs to
+    const home = new Map();
+    allInCh.forEach((p) => p.club && home.set(p.club, p.kh));
+    const group = (c) => (st.ch || c === NONE ? 9 : CH_ORDER[home.get(c)] ?? 9);
+    const clubs = [...tally.keys()].sort((a, b) => group(a) - group(b) || (a === NONE) - (b === NONE) || coll.compare(a, b));
+    const chip = (c) => `<button type="button" data-club="${esc(c)}" aria-pressed="${c === st.club}">`
+      + `${c === NONE ? "bez klubu" : esc(c)} <span class="n">${tally.get(c)}</span></button>`;
+    let html = `<button type="button" data-club="" aria-pressed="${!st.club}">všechny</button>`, prev = null;
+    clubs.forEach((c) => {
+      const g = group(c);
+      if (!st.ch && g !== prev && g !== 9) html += `<span class="chipgroup">${CH[home.get(c)]}</span>`;
+      prev = g;
+      html += chip(c);
+    });
+    chips.innerHTML = html;
 
     const rows = inCh.filter((p) => !st.club || (p.club || NONE) === st.club);
     rows.sort(SORTS[st.sort]);
