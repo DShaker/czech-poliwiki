@@ -26,6 +26,10 @@ def main(argv=None) -> None:
     sen.add_argument("--term", type=int, help="Senate term; default: the one senat.cz shows now")
     sen.add_argument("--cached", action="store_true", help="reuse cached RSS feeds")
 
+    sub.add_parser("spectrum", help="fit ideal points for every chamber and term")
+    site = sub.add_parser("site", help="build the static site")
+    site.add_argument("--out", default="site")
+
     sub.add_parser("stats", help="row counts per table")
 
     a = p.parse_args(argv)
@@ -40,6 +44,12 @@ def main(argv=None) -> None:
     elif a.cmd == "senat":
         from .sources import senat as m
         m.ingest(conn, a.psp_raw, a.term, refresh=not a.cached)
+    elif a.cmd == "spectrum":
+        from . import spectrum
+        spectrum.run_all(conn)
+    elif a.cmd == "site":
+        from . import site
+        site.build(conn, a.out)
     elif a.cmd == "stats":
         for (t,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
             print(f"{t:16} {conn.execute(f'SELECT count(*) FROM {t}').fetchone()[0]:>10}")

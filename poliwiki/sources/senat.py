@@ -127,9 +127,12 @@ def ingest_members(conn: sqlite3.Connection, d: PspData, term: int) -> dict[str,
 def parse_profile(page: str) -> dict:
     """Party, constituency, nominating list and mandate dates from a profile page."""
     page = re.sub(r"<!--.*?-->", "", page, flags=re.S)
+    out = {}
+    # current senators' club (psp.cz stopped updating Senate clubs in 2014); no dates given
+    if m := re.search(r'par_2=(\d+)">(Senátorský klub [^<]+)</a>', page):
+        out["club_id"], out["club"] = m.group(1), html.unescape(m.group(2)).strip()
     t = html.unescape(re.sub(r"<[^>]+>", " ", page)).replace("\xa0", " ")
     t = re.sub(r"\s+", " ", t)
-    out = {}
     if m := re.search(r"Politická příslušnost (.+?) Obvod", t):
         out["party"] = m.group(1).strip()
     if m := re.search(r"Obvod č\. (\d+)", t):
@@ -153,6 +156,15 @@ def _profile_rows(conn, person_id: int, pid_web: str, term: int) -> None:
         (person_id, "senat", str(term), p["start"], p.get("end"),
          f"obvod {p['district']}" if p.get("district") else None, f"senat:{pid_web}"),
     )
+    if p.get("club"):
+        conn.execute("DELETE FROM affiliation WHERE person_id=? AND chamber='senat' AND kind='club'"
+                     " AND org_id LIKE 'senat:%'", (person_id,))
+        conn.execute(
+            "INSERT INTO affiliation (person_id, chamber, kind, org_id, org_name, org_abbr, start_date, end_date)"
+            " VALUES (?,?,?,?,?,?,NULL,NULL)",
+            (person_id, "senat", "club", f"senat:{p['club_id']}", p["club"],
+             p["club"].removeprefix("Senátorský klub ").strip()),
+        )
     for kind, name in (("party", p.get("party")), ("candidate_list", p.get("elected_for"))):
         if name:
             conn.execute(

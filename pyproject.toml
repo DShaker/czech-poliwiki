@@ -3,7 +3,7 @@ name = "poliwiki"
 version = "0.1.0"
 description = "Neutral aggregation of Czech politicians' public voting records and legislative activity"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 packages = ["poliwiki", "poliwiki.sources"]
 
 [tool.setuptools.package-data]
-poliwiki = ["schema.sql"]
+poliwiki = ["schema.sql", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
