@@ -1,0 +1,37 @@
+# Downloads raw open-data files from sources that block cloud/datacentre
+# fetchers other than GitHub Actions, and stores them on the orphan branch
+# `raw-data` so the ingest pipeline can run anywhere.
+name: fetch-raw
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: [".github/workflows/fetch-raw.yml", "scripts/fetch_raw.sh"]
+  schedule:
+    - cron: "17 3 * * *"   # daily 03:17 UTC
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-raw
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download raw files
+        run: bash scripts/fetch_raw.sh out
+      - name: Publish to raw-data branch
+        run: |
+          cd out
+          git init -q -b raw-data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Raw source snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" raw-data
