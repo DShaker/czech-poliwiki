@@ -67,8 +67,23 @@ def ingest_meps(conn: sqlite3.Connection, term: int) -> dict[str, int]:
         mid = m["identifier"]
         url = f"https://www.europarl.europa.eu/meps/en/{mid}"
         if mid not in cz:
-            ids[mid] = resolve_person(conn, "ep", mid, given_name=m.get("givenName"),
-                                      family_name=m.get("familyName"), url=url)
+            pid = ids[mid] = resolve_person(conn, "ep", mid, given_name=m.get("givenName"),
+                                            family_name=m.get("familyName"), url=url)
+            # EP group of every MEP: needed for group majorities and to read the spectrum
+            for ms in (_get(f"meps/{mid}") or [{}])[0].get("hasMembership", []):
+                if not ms.get("membershipClassification", "").endswith("EU_POLITICAL_GROUP"):
+                    continue
+                period = ms.get("memberDuring", {})
+                start, end = period.get("startDate"), period.get("endDate")
+                if end and end < TERM_START[term]:
+                    continue
+                oid = _pid(ms.get("organization", ""))
+                name, abbr = _org_label(oid)
+                conn.execute(
+                    "INSERT OR IGNORE INTO affiliation (person_id, chamber, kind, org_id, org_name, org_abbr, start_date, end_date)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (pid, "ep", "ep_group", oid, name, abbr, start, end),
+                )
             continue
         d = _get(f"meps/{mid}")[0]
         gender = {"MALE": "M", "FEMALE": "F"}.get(d.get("hasGender", "").rsplit("/", 1)[-1])

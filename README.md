@@ -5,9 +5,10 @@ the Poslanecká sněmovna, the Senát and the European Parliament voted, what th
 sponsored, and which club or group they sat in. No scores or rankings: the
 database stores what the official sources publish, with links back to them.
 
-This repository is step 1 of 4: the data foundation. Next come per-politician
-profile pages, an ideal-point (W-NOMINATE style) placement on the political
-spectrum with a published method, and publishing on GitHub Pages.
+Done so far: the data foundation (step 1), a static site with one profile per
+politician (step 2) and an ideal-point placement on the political spectrum per
+chamber and term with a published method (step 3). Next: publishing on GitHub
+Pages with a scheduled refresh.
 
 ## Quick start
 
@@ -18,10 +19,39 @@ python -m poliwiki psp --term 2025 # current Sněmovna term (2021 also works)
 python -m poliwiki senat           # current Senát term
 python -m poliwiki ep --term 10    # current European Parliament term
 python -m poliwiki stats
+python -m poliwiki spectrum        # ideal points per chamber and term
+python -m poliwiki site --out site # static site
+python -m http.server -d site      # preview at http://localhost:8000
 pytest
 ```
 
 Output: `data/poliwiki.sqlite`. Raw HTTP responses are cached in `data/cache`.
+
+## The site
+
+`poliwiki site` writes plain HTML, CSS and JS (no build tools) to `site/`:
+
+- `index.html`: every Czech MP, senator and MEP with a mandate in the data, searchable.
+- `p/<name>-<source id>.html`: profile with mandates, clubs over time, attendance,
+  share of votes against the own club's majority (with the chamber median for
+  context), spectrum position, sponsored prints and a searchable list of every
+  vote linking to the official record. The vote list is loaded from
+  `p/<…>.json` (one character per vote) plus a shared `v/<chamber>-<term>.json`.
+- `spektrum/`: per chamber and term, all members on both dimensions.
+- `metodika.html`: the method, in Czech, with the fit statistics of the current run.
+
+The UI is in Czech because the audience is Czech voters.
+
+## Spectrum model
+
+`poliwiki/spectrum.py` fits a two-dimensional logistic item-response
+ideal-point model (Clinton, Jackman & Rivers 2004; same family as W-NOMINATE)
+to yes/no votes, separately for each chamber and term. Abstentions and absences
+are missing data; void and near-unanimous votes (minority under 2.5 %) are
+dropped; members need 20 usable votes. Dimension 1 is aligned with a
+one-dimensional fit, dimension 2 is the orthogonal remainder, and the sign puts
+the largest club on the positive side. The axes carry no left/right label.
+Results land in tables `ideal_point` and `spectrum_fit`.
 
 ## Sources
 

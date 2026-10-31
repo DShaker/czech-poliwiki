@@ -1,0 +1,79 @@
+<div class="method">
+<h1>Metodika</h1>
+<p class="lede">Web nic nehodnotí a nikoho neřadí. Ukazuje, co oficiální zdroje zveřejňují, a z toho počítá několik jednoduchých,
+ověřitelných čísel. Tady je přesně popsáno jak. Celý výpočet je v <a href="https://github.com/DShaker/czech-poliwiki">otevřeném kódu</a>.
+Stav dat: {{BUILT}}.</p>
+
+<h2 id="zdroje">Zdroje</h2>
+<ul>
+<li><strong>Poslanecká sněmovna</strong>: otevřená data psp.cz (poslanci, kluby, hlasování, omluvy, sněmovní tisky a jejich předkladatelé).</li>
+<li><strong>Senát</strong>: profily senátorů a oficiální RSS hlasování každého senátora na senat.cz.</li>
+<li><strong>Evropský parlament</strong>: data.europarl.europa.eu (poslanci, politické skupiny, jmenovitá hlasování všech europoslanců).</li>
+</ul>
+<p>Každé hlasování na profilu odkazuje na oficiální záznam. Jedna osoba, která působila ve více komorách, je propojena jen tehdy,
+když se shoduje jméno, příjmení i datum narození.</p>
+
+<h2 id="ucast">Účast na hlasování</h2>
+<p>Pro každé hlasování během mandátu známe jednu z voleb: <em>pro, proti, zdržel/a se, přítomen/a a nehlasoval/a, nepřítomen/a, omluven/a</em>.
+„Hlasoval/a“ znamená pro, proti nebo zdržel/a se. Zmatečná hlasování se nepočítají.</p>
+<ul>
+<li>Sněmovna: hlasovací zařízení od roku 2013 nerozlišuje „zdržel se“ a „byl přihlášen, ale nestiskl tlačítko“. Obojí je vedeno jako „zdržel/a se“.
+Nepřihlášený poslanec je „omluven/a“, pokud jeho omluva pokrývá čas hlasování, jinak „nepřítomen/a“.</li>
+<li>Senát: RSS senátora obsahuje jen hlasování, při kterých byl senátorem. Senátoři, kteří odešli před vydáním současného seznamu, zatím v datech nejsou.</li>
+<li>Evropský parlament: „nepřítomen/a“ je doplněno jen u českých europoslanců (u nich známe data mandátu).</li>
+</ul>
+
+<h2 id="klub">Hlasování jinak než většina klubu</h2>
+<p>Pro každé hlasování a každý klub (v EP politickou skupinu) spočítáme, jak hlasovali jeho členové, kteří zvolili pro, proti nebo zdržel/a se.
+Pokud jedna volba má víc než polovinu těchto hlasů a hlasovali alespoň tři členové, je to <em>většina klubu</em>. Jinak se hlasování do ukazatele nezapočítá.
+Ukazatel je podíl hlasování, ve kterých člen zvolil něco jiného než většinu svého klubu, ze všech hlasování, kde většina existovala a člen hlasoval.
+Člen je při výpočtu většiny započten také.</p>
+<p>Číslo popisuje jen shodu s klubem, nikoli kvalitu. Pro srovnání je uveden medián komory (členové s alespoň 100 započtenými hlasováními).
+Senát zveřejňuje jen současný klub senátora bez data vstupu, proto se v Senátu používá současný klub pro celé období.</p>
+
+<h2 id="navrhy">Předložené návrhy</h2>
+<p>Seznam sněmovních tisků, u kterých je osoba uvedena jako předkladatel. U vládních návrhů psp.cz uvádí členy vlády, kteří návrh předkládají,
+takže se objevují u ministrů. Druh předkladatele (vláda, poslanci, Senát, kraj) je odvozen z číselníku tisků; psp.cz jeho popis nezveřejňuje,
+přiřazení je proto ověřeno na datech a popsáno v kódu.</p>
+
+<h2 id="spektrum">Umístění na spektru</h2>
+<p>Pozice na spektru vzniká výhradně z jmenovitých hlasování: dva členové, kteří hlasují často stejně, jsou blízko sebe.
+Nikdo hlasování ručně neoznačuje jako „levicové“ nebo „pravicové“ a osy nemají žádný předem daný význam.</p>
+<h3>Model</h3>
+<p>Používáme dvourozměrný model ideálních bodů (item-response model podle Clinton, Jackman &amp; Rivers 2004), stejnou rodinu modelů jako
+NOMINATE, který se běžně používá pro Kongres USA a Evropský parlament. Pravděpodobnost, že člen <em>i</em> hlasuje pro návrh <em>j</em>, je</p>
+<p><code>P(pro) = logistic(α<sub>j</sub> + β<sub>j</sub> · x<sub>i</sub>)</code></p>
+<p>kde <code>x<sub>i</sub></code> je pozice člena (dvě čísla) a <code>α<sub>j</sub>, β<sub>j</sub></code> popisují hlasování.
+Parametry se odhadují metodou penalizované maximální věrohodnosti (střídavé Newtonovy kroky, normální apriorní rozdělení
+N(0, 5²) pro parametry hlasování). Proti W-NOMINATE je model jednodušší (logistická místo gaussovské užitkové funkce) a dá se snadno
+zkontrolovat; v literatuře dávají oba přístupy téměř stejné pořadí členů.</p>
+<h3>Která data vstupují</h3>
+<ul>
+<li>Každá komora a každé volební období se počítá zvlášť. Pozice z různých komor nebo období proto <strong>nejsou na stejné stupnici</strong>.</li>
+<li>Jen volby pro a proti. Zdržení se, nepřítomnost a nehlasování jsou brány jako chybějící údaj (ve Sněmovně „zdržel se“ splývá s nestisknutím tlačítka).</li>
+<li>Vynechána jsou zmatečná hlasování a jednomyslná nebo téměř jednomyslná hlasování (menšina pod 2,5 %), protože o rozdílech mezi členy nic neříkají.</li>
+<li>Člen potřebuje alespoň 20 započtených hlasování. Kdo během období změnil klub, má stále jednu pozici za celé období.</li>
+</ul>
+<h3>Jak číst osy</h3>
+<p>Po odhadu jsou pozice vycentrovány a přeškálovány na směrodatnou odchylku 1. <strong>Dimenze 1</strong> je natočena tak, aby co nejlépe odpovídala
+jednorozměrnému modelu, tedy jediné ose, která hlasování vysvětluje nejlépe. <strong>Dimenze 2</strong> je zbývající, na ni kolmý směr.
+Znaménko je čistě konvence: kladná strana je ta, kde leží medián největšího klubu. V české Sněmovně dimenze 1 v praxi odděluje vládní
+koalici od opozice, protože tak se hlasuje nejčastěji. To je zjištění z dat, ne vlastnost metody, a neznamená to levici a pravici.</p>
+<p>Interval u pozice (95 %) vychází z křivosti věrohodnosti při pevných parametrech hlasování. Nejistotu v parametrech hlasování nezahrnuje,
+takže skutečná nejistota je o něco větší.</p>
+<h3>Kontroly kvality</h3>
+<p><em>Správně</em> je podíl hlasů pro/proti, které model předpoví správně. <em>APRE</em> je o kolik model snižuje chyby proti prostému
+tipu „každý hlasuje s většinou“ (0 = nic, 1 = vše). Poslední sloupec je korelace dimenze 1 s první hlavní komponentou matice hlasování,
+tedy s výsledkem jednodušší metody bez modelu; vysoká hodnota znamená, že umístění nezávisí na volbě modelu.</p>
+<div class="tablewrap"><table><thead><tr><th>Komora a období</th><th class="num">Členů</th><th class="num">Hlasování (použito / celkem)</th>
+<th class="num">Správně, 1 dim.</th><th class="num">Správně, 2 dim.</th><th class="num">APRE</th><th class="num">r s PCA</th></tr></thead>
+<tbody>{{FIT_ROWS}}</tbody></table></div>
+<p class="note">Vysoká úspěšnost je u parlamentů se silnou klubovou disciplínou běžná: většina hlasování kopíruje hranici koalice a opozice.</p>
+
+<h2 id="mezery">Známé mezery</h2>
+<ul>
+<li>Sněmovna: zatím jen období od roku 2021.</li>
+<li>Senát: chybí hlasování senátorů, kteří odešli v průběhu období; chybí souhrnné počty hlasů za komoru.</li>
+<li>Nově zvolení senátoři, které psp.cz ještě nevede, nemají datum narození, a proto nejsou propojeni s případným působením ve Sněmovně.</li>
+</ul>
+</div>
