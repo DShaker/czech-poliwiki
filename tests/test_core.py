@@ -123,3 +123,29 @@ def test_proposer_kind():
     assert psp._proposer_kind("12", "2", "Netolický M.") == "region"
     assert psp._proposer_kind("0", "4", "ministr vnitra") == "government"
     assert psp._proposer_kind("0", "5", "ČNB") == "other"
+
+
+def test_http_backs_off_on_429(monkeypatch, tmp_path):
+    import io
+    import urllib.error
+    from poliwiki import http
+    calls, sleeps = [], []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout):
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many", {"Retry-After": "7"}, None)
+        return Resp(b"ok")
+
+    monkeypatch.setattr(http.urllib.request, "urlopen", fake_open)
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(http, "CACHE_DIR", tmp_path)
+    assert http.get("https://example.org/x") == b"ok"
+    assert len(calls) == 3 and sleeps.count(7.0) == 2
