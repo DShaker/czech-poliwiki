@@ -62,8 +62,9 @@ def _org_label(org_id: str, _cache: dict = {}) -> tuple[str, str | None]:
 def ingest_meps(conn: sqlite3.Connection, term: int) -> dict[str, int]:
     """Create persons for every MEP of the term; full detail for Czech MEPs."""
     ids: dict[str, int] = {}
-    cz = {m["identifier"] for m in _paged("meps", **{"parliamentary-term": term, "country-of-representation": "CZ"})}
-    for m in _paged("meps", **{"parliamentary-term": term}):
+    # listings and Czech MEPs' details change; never serve them from the cache
+    cz = {m["identifier"] for m in _paged("meps", cache=False, **{"parliamentary-term": term, "country-of-representation": "CZ"})}
+    for m in _paged("meps", cache=False, **{"parliamentary-term": term}):
         mid = m["identifier"]
         url = f"https://www.europarl.europa.eu/meps/en/{mid}"
         if mid not in cz:
@@ -85,7 +86,7 @@ def ingest_meps(conn: sqlite3.Connection, term: int) -> dict[str, int]:
                     (pid, "ep", "ep_group", oid, name, abbr, start, end),
                 )
             continue
-        d = _get(f"meps/{mid}")[0]
+        d = _get(f"meps/{mid}", cache=False)[0]
         gender = {"MALE": "M", "FEMALE": "F"}.get(d.get("hasGender", "").rsplit("/", 1)[-1])
         pid = resolve_person(conn, "ep", mid, given_name=d.get("givenName"),
                              family_name=d.get("familyName"), birth_date=d.get("bday"),
@@ -131,7 +132,8 @@ def ingest_votes(conn: sqlite3.Connection, term: int, meps: dict[str, int], sinc
     today = date.today().isoformat()
     n = 0
     for year in TERM_YEARS[term]:
-        for mtg in _get("meetings", year=year, limit=500):
+        # the current year's meeting list grows; past years are fixed
+        for mtg in _get("meetings", cache=year < date.today().year, year=year, limit=500):
             day = mtg["activity_date"]
             if day < since or not mtg["activity_id"].startswith("MTG-PL"):
                 continue
