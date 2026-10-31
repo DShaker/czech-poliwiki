@@ -115,7 +115,7 @@ def fit(Y: np.ndarray, dims: int = 2, iters: int = 300, tol: float = 1e-5, init:
             r = M * (Y0 - p)
             w = M * p * (1 - p)
             g = Xt.T @ r - theta.T / PRIOR_ITEM                    # (d+1) x m
-            H = np.einsum("ia,ib,ij->jab", Xt, Xt, w) + np.eye(dims + 1) / PRIOR_ITEM
+            H = _weighted_outer(w.T, Xt) + np.eye(dims + 1) / PRIOR_ITEM
             step = np.linalg.solve(H, g.T[..., None])[..., 0]
             theta = theta + _clip(step, 1.0)
             alpha, beta = theta[:, 0], theta[:, 1:]
@@ -125,7 +125,7 @@ def fit(Y: np.ndarray, dims: int = 2, iters: int = 300, tol: float = 1e-5, init:
             r = M * (Y0 - p)
             w = M * p * (1 - p)
             g = r @ beta - x / PRIOR_X
-            H = np.einsum("ja,jb,ij->iab", beta, beta, w) + I_d / PRIOR_X
+            H = _weighted_outer(w, beta) + I_d / PRIOR_X
             x = x + _clip(np.linalg.solve(H, g[..., None])[..., 0], 0.5)
         # pin the scale (mean 0, sd 1 per dimension) and move it into the vote parameters,
         # which leaves every predicted probability unchanged; stops joint ML from drifting
@@ -140,9 +140,16 @@ def fit(Y: np.ndarray, dims: int = 2, iters: int = 300, tol: float = 1e-5, init:
             break
         prev = ll
     w = M * p * (1 - p)
-    H = np.einsum("ja,jb,ij->iab", beta, beta, w) + I_d / PRIOR_X
+    H = _weighted_outer(w, beta) + I_d / PRIOR_X
     cov = np.linalg.inv(H)
     return x, alpha, beta, cov, {"iterations": it + 1, "log_likelihood": ll}
+
+
+def _weighted_outer(W, V):
+    """sum_k W[r, k] * outer(V[k], V[k]) for every row r, as one matrix product
+    (same result as einsum("ka,kb,rk->rab"), much faster)."""
+    d = V.shape[1]
+    return (W @ (V[:, :, None] * V[:, None, :]).reshape(len(V), d * d)).reshape(-1, d, d)
 
 
 def _clip(step, limit):
@@ -207,7 +214,7 @@ def bootstrap(Y, x_start, x_ref, B: int = BOOTSTRAP, seed: int = 0):
     draws = []
     for _ in range(B):
         cols = rng.integers(0, m, m)
-        xb = fit(Y[:, cols], iters=100, init=x_start)[0]
+        xb = fit(Y[:, cols], iters=25, tol=1e-4, init=x_start)[0]
         Xb = np.hstack([np.ones((n, 1)), xb])
         coef = np.linalg.lstsq(Xb, x_ref, rcond=None)[0]
         draws.append(Xb @ coef)
