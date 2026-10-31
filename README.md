@@ -69,8 +69,9 @@ are missing data; void and near-unanimous votes (minority under 2.5 %) are
 dropped; members need 20 usable votes. Dimension 1 is aligned with a
 one-dimensional fit, dimension 2 is the orthogonal remainder, and the sign puts
 the largest club on the positive side. The axes carry no left/right label.
-Standard errors come from a bootstrap over votes (50 resamples, each refitted and
-mapped onto the main fit's scale by least squares), which includes the
+Standard errors come from a block bootstrap over sitting days (50 resamples of
+whole days, each refitted and mapped onto the main fit's scale by least squares;
+votes on one day are not independent), which includes the
 uncertainty in the vote parameters that the analytic errors leave out.
 Results land in tables `ideal_point` and `spectrum_fit`.
 
