@@ -200,20 +200,26 @@ def normalise(x, cov, x1d, club_of, people):
     return xn, covn, largest if clubs else None
 
 
-def bootstrap(Y, x_start, x_ref, B: int = BOOTSTRAP, seed: int = 0):
-    """Standard errors from resampling votes with replacement and refitting.
+def bootstrap(Y, x_start, x_ref, groups=None, B: int = BOOTSTRAP, seed: int = 0):
+    """Standard errors from resampling sitting days with replacement and refitting.
 
-    The analytic errors from fit() treat the vote parameters as known, which
-    makes them too narrow. Here each resample draws the votes (columns) with
-    replacement, refits from the full-data solution, and maps the result onto
-    the reported scale with a least-squares affine transformation (the model is
-    only identified up to one). The spread of a member's position across the
-    resamples is their standard error. Returns (se n x 2, B used)."""
+    The analytic errors from fit() treat the vote parameters as known and the
+    votes as independent, which makes them too narrow: votes on the same day
+    are often on one bill and follow the same split. Each resample therefore
+    draws whole days (`groups`: a day index per vote column; default one group
+    per vote) with replacement, refits from the full-data solution, and maps
+    the result onto the reported scale with a least-squares affine
+    transformation (the model is only identified up to one). The spread of a
+    member's position across the resamples is their standard error.
+    Returns (se n x 2, B used)."""
     rng = np.random.default_rng(seed)
     n, m = Y.shape
+    groups = np.arange(m) if groups is None else np.asarray(groups)
+    _, groups = np.unique(groups, return_inverse=True)
+    members = [np.flatnonzero(groups == k) for k in range(groups.max() + 1)]
     draws = []
     for _ in range(B):
-        cols = rng.integers(0, m, m)
+        cols = np.concatenate([members[k] for k in rng.integers(0, len(members), len(members))])
         xb = fit(Y[:, cols], iters=25, tol=1e-4, init=x_start)[0]
         Xb = np.hstack([np.ones((n, 1)), xb])
         coef = np.linalg.lstsq(Xb, x_ref, rcond=None)[0]
@@ -251,7 +257,8 @@ def run(conn: sqlite3.Connection, chamber: str, term: str) -> dict:
     clubs = last_club(conn, chamber, term)
     xn, covn, anchor = normalise(x, cov, x1[:, 0], clubs, people)
     se_analytic = np.sqrt(np.stack([covn[:, 0, 0], covn[:, 1, 1]], axis=1))
-    se, n_boot = bootstrap(Y, x, xn) if BOOTSTRAP else (se_analytic, 0)
+    day = dict(conn.execute("SELECT id, date FROM vote_event WHERE chamber=? AND term=?", (chamber, term)))
+    se, n_boot = bootstrap(Y, x, xn, [day[v] for v in votes]) if BOOTSTRAP else (se_analytic, 0)
     # cross-check against a model-free method: first principal component of the vote matrix
     colmean = np.nanmean(Y, axis=0)
     Z = np.where(np.isnan(Y), colmean, Y) - colmean

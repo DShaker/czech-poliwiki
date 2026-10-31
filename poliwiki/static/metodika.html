@@ -59,10 +59,11 @@ zkontrolovat; v literatuře dávají oba přístupy téměř stejné pořadí č
 jednorozměrnému modelu, tedy jediné ose, která hlasování vysvětluje nejlépe. <strong>Dimenze 2</strong> je zbývající, na ni kolmý směr.
 Znaménko je čistě konvence: kladná strana je ta, kde leží medián největšího klubu. V české Sněmovně dimenze 1 v praxi odděluje vládní
 koalici od opozice, protože tak se hlasuje nejčastěji. To je zjištění z dat, ne vlastnost metody, a neznamená to levici a pravici.</p>
-<p>Interval u pozice (95 %, tedy ±1,96 směrodatné chyby) se počítá bootstrapem: z hlasování daného období se 50krát vylosuje
-stejně velký vzorek s opakováním, model se na každém vzorku odhadne znovu a výsledek se lineárně převede na stupnici hlavního odhadu.
-Směrodatná chyba je rozptyl pozice člena napříč těmito odhady. Zahrnuje tak i nejistotu v parametrech jednotlivých hlasování, kterou
-jednodušší výpočet z křivosti věrohodnosti vynechává. Tabulka níže uvádí pro srovnání medián obou chyb na dimenzi 1.</p>
+<p>Interval u pozice (95 %, tedy ±1,96 směrodatné chyby) se počítá bootstrapem: z jednacích dnů daného období se 50krát vylosuje
+stejný počet dní s opakováním (vždy se všemi hlasováními toho dne), model se na každém vzorku odhadne znovu a výsledek se lineárně převede
+na stupnici hlavního odhadu. Směrodatná chyba je rozptyl pozice člena napříč těmito odhady. Losují se celé dny, protože hlasování z jednoho
+dne se často týkají téhož návrhu a dělí komoru stejně, takže nejsou nezávislá. Chyba tak zahrnuje i nejistotu v parametrech hlasování,
+kterou jednodušší výpočet z křivosti věrohodnosti vynechává. Tabulka níže uvádí pro srovnání medián obou chyb na dimenzi 1.</p>
 <h3>Kontroly kvality</h3>
 <p><em>Správně</em> je podíl hlasů pro/proti, které model předpoví správně. <em>APRE</em> je o kolik model snižuje chyby proti prostému
 tipu „každý hlasuje s většinou“ (0 = nic, 1 = vše). Poslední sloupec je korelace dimenze 1 s první hlavní komponentou matice hlasování,
