@@ -16,6 +16,7 @@ import re
 import sqlite3
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from datetime import date, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -47,10 +48,21 @@ def ingest(conn: sqlite3.Connection, psp_raw: str | Path, term: int | None = Non
     term = term or current_term()
     with Run(conn, f"senat{term}") as run:
         d = PspData(psp_raw, "2025")  # any term: only organy/osoby/zarazeni are used
-        senators = ingest_members(conn, d, term)
+        # everyone who sat at any point of the term, including senators who
+        # left mid-term; keep only those whose feed has votes in this term
+        feeds, keep = {}, []
+        for pid_web, name in senators_in_term():
+            items = fetch_feed(pid_web, refresh)
+            dates = [v["date"] for v in items or [] if v["term"] == str(term)]
+            if dates:
+                feeds[pid_web] = items
+                keep.append((pid_web, name, date.fromisoformat(max(dates))))
+            else:
+                log.info("senator %s (%s): no votes in term %s, skipped", name, pid_web, term)
+        senators = ingest_members(conn, d, term, keep)
         n_ev, n_votes = 0, 0
         for pid_web, person_id in senators.items():
-            e, v = ingest_votes(conn, pid_web, person_id, term, refresh)
+            e, v = ingest_votes(conn, pid_web, person_id, term, feeds[pid_web])
             n_ev, n_votes = max(n_ev, e), n_votes + v
         conn.commit()
         total = conn.execute("SELECT count(*) FROM vote_event WHERE chamber='senat' AND term=?", (str(term),)).fetchone()[0]
@@ -58,9 +70,29 @@ def ingest(conn: sqlite3.Connection, psp_raw: str | Path, term: int | None = Non
         log.info("Senát %s: %s", term, run.detail)
 
 
-def current_senators() -> list[tuple[str, str]]:
-    """[(senat.cz id, display name)] from the official list page."""
-    page = http.get(f"{SENAT}/senatori/index.php?lng=cz&par_2=2", cache=False).decode("utf-8", "replace")
+def current_senators(on: date | None = None) -> list[tuple[str, str]]:
+    """[(senat.cz id, display name)] from the official list page, as of `on` (default today)."""
+    url = f"{SENAT}/senatori/index.php?lng=cz&par_2=2"
+    if on:
+        url += f"&ke_dni={on.day}.{on.month}.{on.year}"
+    # past dates never change; today's list does
+    page = http.get(url, cache=on is not None and on < date.today()).decode("utf-8", "replace")
+    return parse_list(page)
+
+
+def senators_in_term(days: int = 800, step: int = 14) -> list[tuple[str, str]]:
+    """Union of the senator lists sampled every `step` days over the last `days`
+    days (a Senate term is two years). Covers senators who left mid-term; the
+    caller drops those without votes in the term."""
+    today = date.today()
+    out: dict[str, str] = dict(current_senators())
+    for back in range(step, days + 1, step):
+        for pid, name in current_senators(today - timedelta(days=back)):
+            out.setdefault(pid, name)
+    return list(out.items())
+
+
+def parse_list(page: str) -> list[tuple[str, str]]:
     seen, out = set(), []
     for pid, name in re.findall(r'href="[^"]*par_3=(\d+)[^"]*"[^>]*>(.*?)</a>', page, re.S):
         name = html.unescape(re.sub(r"<[^>]+>", "", name)).replace("\xa0", " ").strip()
@@ -70,8 +102,12 @@ def current_senators() -> list[tuple[str, str]]:
     return out
 
 
-def ingest_members(conn: sqlite3.Connection, d: PspData, term: int) -> dict[str, int]:
-    """Return {senat.cz id: person_id} for senators of the term."""
+def ingest_members(conn: sqlite3.Connection, d: PspData, term: int,
+                   senators: list[tuple[str, str, date]]) -> dict[str, int]:
+    """Return {senat.cz id: person_id} for senators of the term. Each senator
+    comes with the date of their last vote in the term; their profile is read
+    as of that day, so senators who left (or were re-elected for a new seat
+    since) get the mandate and club they held during this term."""
     se = sorted((r for r in d.organy.values() if r[2] == TYP_SENAT and (r[3] or "").startswith("SE")),
                 key=lambda r: int(r[3][2:]))
     exact = [r for r in se if r[3] == f"SE{term}"]
@@ -86,7 +122,7 @@ def ingest_members(conn: sqlite3.Connection, d: PspData, term: int) -> dict[str,
         by_name[(fold(col(r, 3)), fold(col(r, 2)))].append(id_osoba)
 
     out: dict[str, int] = {}
-    for pid_web, name in current_senators():
+    for pid_web, name, on in senators:
         ids = [i for (g, f), m in by_name.items() if fold(name) == f"{g} {f}" for i in m]
         url = f"{SENAT}/senatori/index.php?lng=cz&par_3={pid_web}"
         existing = conn.execute(
@@ -99,7 +135,7 @@ def ingest_members(conn: sqlite3.Connection, d: PspData, term: int) -> dict[str,
             given, _, family = name.partition(" ")
             out[pid_web] = existing[0] if existing else resolve_person(
                 conn, "senat", pid_web, given_name=given, family_name=family, country="CZE", url=url)
-            _profile_rows(conn, out[pid_web], pid_web, term)
+            _profile_rows(conn, out[pid_web], pid_web, term, on)
             continue
         id_osoba = ids[0]
         person_id = _person(conn, d, id_osoba)
@@ -110,7 +146,7 @@ def ingest_members(conn: sqlite3.Connection, d: PspData, term: int) -> dict[str,
             (pid_web, person_id, url),
         )
         out[pid_web] = person_id
-        _profile_rows(conn, person_id, pid_web, term)
+        _profile_rows(conn, person_id, pid_web, term, on)
         for z in d.zarazeni:
             if z[0] == id_osoba and z[2] == "0" and d.organy.get(z[1], [None] * 3)[2] == TYP_SEN_KLUB:
                 org = d.organy[z[1]]
@@ -144,8 +180,10 @@ def parse_profile(page: str) -> dict:
     return out
 
 
-def _profile_rows(conn, person_id: int, pid_web: str, term: int) -> None:
-    page = http.get(f"{SENAT}/senatori/index.php?lng=cz&par_3={pid_web}", cache=False).decode("utf-8", "replace")
+def _profile_rows(conn, person_id: int, pid_web: str, term: int, on: date) -> None:
+    url = f"{SENAT}/senatori/index.php?lng=cz&ke_dni={on.day}.{on.month}.{on.year}&O={term}&par_3={pid_web}"
+    # a profile as of a day more than a month back no longer changes
+    page = http.get(url, cache=(date.today() - on).days > 31).decode("utf-8", "replace")
     p = parse_profile(page)
     if not p.get("start"):
         log.warning("senator %s: no mandate on profile page", pid_web)
@@ -201,18 +239,20 @@ def parse_feed(xml_bytes: bytes):
         }
 
 
-def ingest_votes(conn, pid_web: str, person_id: int, term: int, refresh: bool) -> tuple[int, int]:
+def fetch_feed(pid_web: str, refresh: bool) -> list[dict] | None:
     url = f"{SENAT}/senatori/hlasovani_rss.php?pid={pid_web}"
-    items = None
     for attempt in range(3):
         try:
-            items = list(parse_feed(http.get(url, cache=not refresh and attempt == 0)))
-            break
+            return list(parse_feed(http.get(url, cache=not refresh and attempt == 0)))
         except ET.ParseError as e:  # truncated transfer: fetch again
             log.warning("feed %s unreadable (%s), attempt %d", pid_web, e, attempt + 1)
-    if items is None:
-        log.error("feed %s skipped after 3 attempts", pid_web)
-        return 0, 0
+        except http.NotFound:
+            return None
+    log.error("feed %s skipped after 3 attempts", pid_web)
+    return None
+
+
+def ingest_votes(conn, pid_web: str, person_id: int, term: int, items: list[dict]) -> tuple[int, int]:
     n_ev = n = 0
     for v in items:
         if v["term"] != str(term):

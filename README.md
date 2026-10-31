@@ -7,8 +7,8 @@ database stores what the official sources publish, with links back to them.
 
 Done so far: the data foundation (step 1), a static site with one profile per
 politician (step 2) and an ideal-point placement on the political spectrum per
-chamber and term with a published method (step 3). Next: publishing on GitHub
-Pages with a scheduled refresh.
+chamber and term with a published method (step 3), and a daily rebuild
+published on GitHub Pages (step 4).
 
 ## Quick start
 
@@ -42,6 +42,24 @@ Output: `data/poliwiki.sqlite`. Raw HTTP responses are cached in `data/cache`.
 
 The UI is in Czech because the audience is Czech voters.
 
+## Publishing and refresh
+
+Two workflows keep the site current:
+
+1. `fetch-raw` (daily, 03:17 UTC) downloads the psp.cz dumps to the `raw-data`
+   branch, because psp.cz rejects most cloud IP ranges but accepts GitHub Actions.
+2. `publish` runs after every successful `fetch-raw`, on pushes to `main` that
+   touch the code, or by hand. It rebuilds the database from scratch (Sněmovna
+   2021 and 2025, Senát, EP term 10), fits the spectrum, builds `site/` and
+   deploys it to GitHub Pages. If any step fails, the previous site stays up.
+
+The HTTP cache (`data/cache`) is kept between runs with `actions/cache`, so
+only new EP meetings and the senators' feeds are downloaded again. The cache
+key changes every month, which forces a full refetch at least that often.
+
+One-off repository setup: Settings → Pages → Source: **GitHub Actions**.
+Scheduled and `workflow_run` triggers only fire from the default branch (`main`).
+
 ## Spectrum model
 
 `poliwiki/spectrum.py` fits a two-dimensional logistic item-response
@@ -51,6 +69,9 @@ are missing data; void and near-unanimous votes (minority under 2.5 %) are
 dropped; members need 20 usable votes. Dimension 1 is aligned with a
 one-dimensional fit, dimension 2 is the orthogonal remainder, and the sign puts
 the largest club on the positive side. The axes carry no left/right label.
+Standard errors come from a bootstrap over votes (50 resamples, each refitted and
+mapped onto the main fit's scale by least squares), which includes the
+uncertainty in the vote parameters that the analytic errors leave out.
 Results land in tables `ideal_point` and `spectrum_fit`.
 
 ## Sources
@@ -98,8 +119,10 @@ did not vote), `absent`, `excused`.
   regional assembly) was inferred from the data and is in `psp._proposer_kind`.
   For government bills the listed sponsors are the ministers who present them.
 - **Senát totals.** The feeds give each senator's vote but not chamber totals,
-  so `yes_count` etc. are empty for the Senate. Senators who left before the
-  current list was published are not yet ingested.
+  so `yes_count` etc. are empty for the Senate. Senators who left mid-term are
+  found by sampling senat.cz's list "as of" a date every 14 days; each
+  senator's profile is read as of their last vote in the term, so the mandate
+  and club shown are the ones they held then.
 - **EP absences.** The EP lists who voted and who attended each day. Attended
   without voting is `not_voting`, excused is `excused`; `absent` is filled only
   for Czech MEPs, whose mandate dates are known.

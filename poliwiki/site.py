@@ -197,8 +197,12 @@ def num(x: float, digits: int = 2) -> str:
     return f"{x:+.{digits}f}".replace(".", ",").replace("-", "−")
 
 
+UPDATED: str | None = None  # date of the last ingest, set by build()
+
+
 def page(title: str, body: str, depth: int, description: str = "") -> str:
     up = "../" * depth
+    updated = f" Stav dat k {fmt_date(UPDATED)}." if UPDATED else ""
     return f"""<!doctype html>
 <html lang="cs">
 <head>
@@ -214,7 +218,7 @@ def page(title: str, body: str, depth: int, description: str = "") -> str:
 <main>
 {body}
 </main>
-<footer>Data z oficiálních zdrojů (psp.cz, senat.cz, data.europarl.europa.eu), bez hodnocení a pořadí.
+<footer>Data z oficiálních zdrojů (psp.cz, senat.cz, data.europarl.europa.eu), bez hodnocení a pořadí.{updated}
 <a href="{up}metodika.html">Jak se čísla počítají</a> · <a href="https://github.com/DShaker/czech-poliwiki">zdrojový kód</a></footer>
 </body>
 </html>
@@ -306,6 +310,9 @@ def scatter_chart(points, names, links) -> str:
 # ---------------------------------------------------------------- build
 
 def build(conn: sqlite3.Connection, out: str | Path) -> None:
+    global UPDATED
+    last = conn.execute("SELECT max(finished_at) FROM ingest_run").fetchone()[0]
+    UPDATED = last[:10] if last else None
     out = Path(out)
     if out.exists():
         shutil.rmtree(out)
@@ -575,13 +582,20 @@ na stejné stupnici a nedají se porovnávat. <a href="../metodika.html#spektrum
 <ul class="list">{''.join(items)}</ul>""", 1), "utf-8")
 
 
+def _se_pair(f) -> str:
+    if "se_median_bootstrap" not in f:
+        return "–"
+    return f"{f['se_median_bootstrap']:.2f} / {f['se_median_analytic']:.2f}".replace(".", ",")
+
+
 def methodology(fits, terms) -> str:
     rows = []
     for (ch, term), f in sorted(fits.items()):
         rows.append(f"<tr><td>{CHAMBER[ch]}, {e(term_label(ch, term))}</td><td class='num'>{f['members_used']}</td>"
                     f"<td class='num'>{f['votes_used']} / {f['votes_total']}</td><td class='num'>{pct(f['classification_1d']['correct'])}</td>"
                     f"<td class='num'>{pct(f['classification_2d']['correct'])}</td><td class='num'>{f['classification_2d']['apre']:.2f}</td>"
-                    f"<td class='num'>{f['corr_dim1_pca']:.2f}</td></tr>")
+                    f"<td class='num'>{f['corr_dim1_pca']:.2f}</td>"
+                    f"<td class='num'>{_se_pair(f)}</td></tr>")
     built = datetime.now(timezone.utc).strftime("%-d. %-m. %Y")
     text = resources.files("poliwiki").joinpath("static/metodika.html").read_text("utf-8")
     return text.replace("{{FIT_ROWS}}", "".join(rows)).replace("{{BUILT}}", built)

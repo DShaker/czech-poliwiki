@@ -33,6 +33,7 @@ LOPSIDED = 0.025        # drop votes where the minority is under 2.5 % of yes+no
 PRIOR_X = 1.0
 PRIOR_ITEM = 25.0
 CLUB_KIND = {"psp": "club", "senat": "club", "ep": "ep_group"}
+BOOTSTRAP = 50          # resamples of the votes for the uncertainty of each position
 
 DDL = """
 CREATE TABLE IF NOT EXISTS ideal_point (
@@ -86,16 +87,20 @@ def filter_matrix(people, votes, Y):
             return people, votes, Y
 
 
-def fit(Y: np.ndarray, dims: int = 2, iters: int = 300, tol: float = 1e-5, seed: int = 0):
-    """Penalised ML ideal points. Returns x (n x d), alpha (m), beta (m x d), cov (n x d x d)."""
+def fit(Y: np.ndarray, dims: int = 2, iters: int = 300, tol: float = 1e-5, init: np.ndarray | None = None):
+    """Penalised ML ideal points. Returns x (n x d), alpha (m), beta (m x d), cov (n x d x d).
+    `init` warm-starts the member positions (used by the bootstrap)."""
     n, m = Y.shape
     M = ~np.isnan(Y)
     Y0 = np.where(M, Y, 0.0)
-    # start: leading singular vectors of the centred vote matrix (missing = vote mean)
-    colmean = np.nanmean(Y, axis=0)
-    Z = np.where(M, Y, colmean) - colmean
-    U, S, _ = np.linalg.svd(Z, full_matrices=False)
-    x = U[:, :dims] * np.sqrt(n)
+    if init is None:
+        # start: leading singular vectors of the centred vote matrix (missing = vote mean)
+        colmean = np.nanmean(Y, axis=0)
+        Z = np.where(M, Y, colmean) - colmean
+        U, S, _ = np.linalg.svd(Z, full_matrices=False)
+        x = U[:, :dims] * np.sqrt(n)
+    else:
+        x = init.copy()
     x = (x - x.mean(0)) / x.std(0)
     alpha = np.zeros(m)
     beta = np.zeros((m, dims))
@@ -188,6 +193,27 @@ def normalise(x, cov, x1d, club_of, people):
     return xn, covn, largest if clubs else None
 
 
+def bootstrap(Y, x_start, x_ref, B: int = BOOTSTRAP, seed: int = 0):
+    """Standard errors from resampling votes with replacement and refitting.
+
+    The analytic errors from fit() treat the vote parameters as known, which
+    makes them too narrow. Here each resample draws the votes (columns) with
+    replacement, refits from the full-data solution, and maps the result onto
+    the reported scale with a least-squares affine transformation (the model is
+    only identified up to one). The spread of a member's position across the
+    resamples is their standard error. Returns (se n x 2, B used)."""
+    rng = np.random.default_rng(seed)
+    n, m = Y.shape
+    draws = []
+    for _ in range(B):
+        cols = rng.integers(0, m, m)
+        xb = fit(Y[:, cols], iters=100, init=x_start)[0]
+        Xb = np.hstack([np.ones((n, 1)), xb])
+        coef = np.linalg.lstsq(Xb, x_ref, rcond=None)[0]
+        draws.append(Xb @ coef)
+    return np.std(np.array(draws), axis=0, ddof=1), B
+
+
 def last_club(conn, chamber: str, term: str) -> dict[int, str]:
     """Club/group each member belonged to last within the term's votes."""
     end = conn.execute("SELECT max(date) FROM vote_event WHERE chamber=? AND term=?", (chamber, term)).fetchone()[0]
@@ -217,6 +243,8 @@ def run(conn: sqlite3.Connection, chamber: str, term: str) -> dict:
     stats1 = classification(Y, x1, a1, b1)
     clubs = last_club(conn, chamber, term)
     xn, covn, anchor = normalise(x, cov, x1[:, 0], clubs, people)
+    se_analytic = np.sqrt(np.stack([covn[:, 0, 0], covn[:, 1, 1]], axis=1))
+    se, n_boot = bootstrap(Y, x, xn) if BOOTSTRAP else (se_analytic, 0)
     # cross-check against a model-free method: first principal component of the vote matrix
     colmean = np.nanmean(Y, axis=0)
     Z = np.where(np.isnan(Y), colmean, Y) - colmean
@@ -229,13 +257,16 @@ def run(conn: sqlite3.Connection, chamber: str, term: str) -> dict:
         "classification_2d": stats2, "classification_1d": stats1,
         "corr_dim1_pca": r_pca, "orientation_club": anchor,
         "min_votes": MIN_VOTES, "lopsided": LOPSIDED, **info,
+        "bootstrap": n_boot,
+        "se_median_bootstrap": float(np.median(se[:, 0])),
+        "se_median_analytic": float(np.median(se_analytic[:, 0])),
     }
     conn.execute("DELETE FROM ideal_point WHERE chamber=? AND term=?", (chamber, term))
     nv = (~np.isnan(Y)).sum(1)
     conn.executemany(
         "INSERT INTO ideal_point (person_id, chamber, term, dim1, dim2, se1, se2, n_votes) VALUES (?,?,?,?,?,?,?,?)",
         [(int(p), chamber, term, float(xn[k, 0]), float(xn[k, 1]),
-          float(np.sqrt(covn[k, 0, 0])), float(np.sqrt(covn[k, 1, 1])), int(nv[k]))
+          float(se[k, 0]), float(se[k, 1]), int(nv[k]))
          for k, p in enumerate(people)],
     )
     conn.execute(
@@ -243,8 +274,10 @@ def run(conn: sqlite3.Connection, chamber: str, term: str) -> dict:
         (chamber, term, datetime.now(timezone.utc).isoformat(timespec="seconds"), json.dumps(detail)),
     )
     conn.commit()
-    log.info("%s %s: %d members x %d votes, %.1f %% correct (1D %.1f %%), APRE %.2f, r(PCA)=%.3f",
-             chamber, term, *Y.shape, 100 * stats2["correct"], 100 * stats1["correct"], stats2["apre"], r_pca)
+    log.info("%s %s: %d members x %d votes, %.1f %% correct (1D %.1f %%), APRE %.2f, r(PCA)=%.3f,"
+             " median SE dim1 %.3f (analytic %.3f)",
+             chamber, term, *Y.shape, 100 * stats2["correct"], 100 * stats1["correct"], stats2["apre"], r_pca,
+             detail["se_median_bootstrap"], detail["se_median_analytic"])
     return detail
 
 

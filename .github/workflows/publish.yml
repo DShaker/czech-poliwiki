@@ -1,0 +1,81 @@
+# Rebuilds the database from the sources and publishes the static site on
+# GitHub Pages. Runs after every successful fetch-raw (daily), when the code
+# on main changes, or by hand. A failed run leaves the last published site up.
+name: publish
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [fetch-raw]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: ["poliwiki/**", "pyproject.toml", ".github/workflows/publish.yml"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: raw-data
+          path: data/raw
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      # HTTP cache: European Parliament meetings older than a week and past
+      # senator lists never change, so reuse them across runs. The key rolls
+      # over monthly so anything cached wrongly is refetched at least that often.
+      - id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: http-${{ steps.month.outputs.month }}-${{ github.run_id }}
+          restore-keys: http-${{ steps.month.outputs.month }}-
+      - name: Ingest
+        run: |
+          cat data/raw/FETCHED_AT
+          python -m poliwiki psp --term 2021
+          python -m poliwiki psp --term 2025
+          python -m poliwiki senat
+          python -m poliwiki ep --term 10
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/cache
+          key: http-${{ steps.month.outputs.month }}-${{ github.run_id }}
+      - name: Spectrum and site
+        run: |
+          python -m poliwiki spectrum
+          python -m poliwiki site --out site
+          python -m poliwiki stats
+          du -sh site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

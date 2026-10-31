@@ -97,3 +97,19 @@ def test_build_site(conn, tmp_path):
 
 def test_slugify():
     assert site.slugify("Vít Rakušan") == "vit-rakusan"
+
+
+def test_bootstrap_errors_cover_truth_and_shrink_with_votes():
+    se = {}
+    for n_votes in (60, 240):
+        c = db.connect(":memory:")
+        x, pids = _chamber(c, n_votes=n_votes, seed=3)
+        d = spectrum.run(c, "psp", "T")
+        assert d["bootstrap"] == spectrum.BOOTSTRAP
+        r = {p: (v, s) for p, v, s in c.execute("SELECT person_id, dim1, se1 FROM ideal_point")}
+        est, err = np.array([r[p][0] for p in pids]), np.array([r[p][1] for p in pids])
+        A = np.column_stack([np.ones_like(x), x])
+        truth = A @ np.linalg.lstsq(A, est, rcond=None)[0]  # true positions on the estimate's scale
+        assert np.mean(np.abs(est - truth) < 1.96 * err) > 0.85
+        se[n_votes] = d["se_median_bootstrap"]
+    assert se[240] < se[60]
