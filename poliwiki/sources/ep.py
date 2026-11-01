@@ -131,8 +131,8 @@ PROCEDURE = (("***III", "řádný legislativní postup, 3. čtení"), ("***II", 
              ("***I", "řádný legislativní postup, 1. čtení"), ("***", "postup souhlasu"),
              ("*", "postup konzultace"))
 # decision labels the EP uses for the vote on a whole text (en referenceText, lower case)
-WHOLE_TEXT = ("text as a whole", "single vote", "provisional agreement", "motion for resolution (as a whole)",
-              "proposal for a decision", "draft decision")
+WHOLE_TEXT = ("single vote", "provisional agreement", "commission proposal", "proposal for a council decision",
+              "draft council decision", "proposal for a decision", "draft decision")
 
 
 def procedure(title: str | None) -> tuple[str | None, str | None]:
@@ -157,15 +157,17 @@ def motion(dec: dict) -> str | None:
     parts = [p for p in (heading, ref if ref and heading and ref.lower() not in heading.lower() else None) if p]
     if not parts and ref:
         parts = [ref]
-    text = " – ".join(parts)
-    if who:
+    text = " ".join(" – ".join(parts).split())
+    if who and who.lower() in ("původní znění", "original text"):
+        text = f"{text} (původní znění)" if text else "původní znění"
+    elif who:
         text = f"{text} · předložil: {who}" if text else f"předložil: {who}"
     return text or None
 
 
 def is_whole_text(dec: dict) -> bool:
     r = _ref_en(dec)
-    return any(r.startswith(w) for w in WHOLE_TEXT)
+    return r == "motion for a resolution" or "as a whole" in r or r.startswith(WHOLE_TEXT)
 
 
 def ingest_votes(conn: sqlite3.Connection, term: int, meps: dict[str, int], since: str | None = None) -> int:
