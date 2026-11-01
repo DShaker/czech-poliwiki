@@ -1,0 +1,7 @@
+200	423223	https://www.psp.cz/eknih/cdrom/opendata/poslanci.zip	out/psp/poslanci.zip
+200	3323752	https://www.psp.cz/eknih/cdrom/opendata/hl-2025ps.zip	out/psp/hl-2025ps.zip
+200	6464952	https://www.psp.cz/eknih/cdrom/opendata/hl-2021ps.zip	out/psp/hl-2021ps.zip
+200	4156468	https://www.psp.cz/eknih/cdrom/opendata/tisky.zip	out/psp/tisky.zip
+200	2743452	https://www.psp.cz/eknih/cdrom/opendata/schuze.zip	out/psp/schuze.zip
+200	19679	https://www.senat.cz/senatori/index.php?lng=cz&O=15	out/senat/senatori.html
+200	244	https://www.senat.cz/xqw/xervlet/pssenat/hlas?O=15	out/senat/hlas.html
