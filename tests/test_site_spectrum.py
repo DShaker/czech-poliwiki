@@ -133,3 +133,21 @@ def test_index_rows_carry_chambers_and_unified_club(conn, tmp_path):
     cur = next(r for r in rows.values() if r["a"])
     assert cur["hc"] == ["psp"] and cur["k"] in ("A", "B")
     assert 'data-ch="senat"' in html and 'aria-current="page"' in html
+
+
+def test_event_rows_share_agendas_and_count_votes_per_item():
+    # id, date, title, detail, outcome, url, print, print url, yes, no, abst, doc, session, number,
+    # agenda_id, agenda, stage, motion, key_vote
+    evs = [
+        ("1", "2026-01-01", "Novela", None, "passed", "u", "7", "t", 1, 0, 0, None, "1", "1",
+         "psp:bod:5", "Vládní návrh zákona /sněmovní tisk 7/", "3. čtení", None, None),
+        ("2", "2026-01-01", "Novela", None, "passed", "u", "7", "t", 1, 0, 0, None, "1", "2",
+         "psp:bod:5", "Vládní návrh zákona /sněmovní tisk 7/", "3. čtení", None, "závěrečné hlasování o návrhu (3. čtení)"),
+        ("3", "2026-01-02", "Pořad schůze", None, "passed", "u", None, None, 1, 0, 0, None, "2", "1",
+         None, None, None, None, None),
+    ]
+    rows, agendas = site.event_rows("psp", evs)
+    assert agendas == [["Vládní návrh zákona /sněmovní tisk 7/", "3. čtení"]]
+    assert [r[12] for r in rows] == [0, 0, -1]
+    assert [(r[15], r[16]) for r in rows] == [(1, 2), (2, 2), (0, 0)]
+    assert rows[1][14].startswith("závěrečné") and rows[2][17].startswith("Procedurální hlasování o pořadu")

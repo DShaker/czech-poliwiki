@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import sqlite3
 import zipfile
 from collections import defaultdict
@@ -227,22 +228,132 @@ def _obdobi_no(d: PspData) -> str:
     return (d.organy[d.term_organ][3] or "PSP").removeprefix("PSP")
 
 
-def _agenda_bills(d: PspData) -> dict[tuple[str, str], str]:
-    """(schuze number, bod number) -> tisk number, for this term."""
+# bod_schuze.id_bod_stav (bod_stav.unl): 0 projednán, 4 právě projednávaný,
+# 2 přerušen, 6 již projednán, 5 odročen, 3 neprojednatelný, 1 neprojednán, 7 vyřazen.
+# Used only to break ties: an item that was debated is likelier to hold a vote.
+BOD_STAV_RANK = {"0": 0, "4": 0, "2": 1, "6": 2, "5": 3, "3": 4, "1": 5, "7": 6}
+
+# typ_stavu names -> the reading shown on the site
+READINGS = (("1. čtení", "1. čtení"), ("2. čtení", "2. čtení"), ("3. čtení", "3. čtení"),
+            ("Sněmovna (Senát)", "po vrácení Senátem"), ("Sněmovna (Prezident)", "po vrácení prezidentem"))
+
+
+def clean_title(s: str | None) -> str | None:
+    """psp.cz vote titles mark a line break in the short name with '**'."""
+    if not s:
+        return s
+    return " ".join(s.replace("**", " ").split()) or None
+
+
+def _words(s: str | None) -> set[str]:
+    import re
+    return {w for w in re.findall(r"\w+", (s or "").lower()) if len(w) > 3}
+
+
+def pick_agenda_item(cands: list[list[str]], vote_title: str | None) -> list[str] | None:
+    """Choose the agenda item a vote belongs to among items sharing its number.
+
+    hl_hlasovani refers to an agenda item only by (sitting, item number), and
+    bod_schuze holds both the agenda as sent in the invitation (pozvanka=1) and
+    the agenda as changed during the sitting, which renumbers items. Prefer the
+    changed agenda, then the item whose title shares words with the vote title,
+    then an item that was debated.
+    """
+    if not cands:
+        return None
+    live = [b for b in cands if col(b, 9) != "1"] or cands
+    if len(live) == 1:
+        return live[0]
+    t = _words(vote_title)
+    return max(live, key=lambda b: (len(t & _words(f"{b[5]} {col(b, 14) or ''}")),
+                                    -BOD_STAV_RANK.get(b[8], 9)))
+
+
+def reading(stav_name: str | None) -> str | None:
+    for prefix, label in READINGS:
+        if (stav_name or "").startswith(prefix):
+            return label
+    return None
+
+
+def stage_label(readings: set[str]) -> str | None:
+    order = [label for _, label in READINGS]
+    rs = sorted(readings, key=order.index)
+    if not rs:
+        return None
+    if all(r.endswith("čtení") for r in rs) and len(rs) > 1:
+        return " a ".join(r.removesuffix(" čtení") for r in rs) + " čtení"
+    return ", ".join(rs)
+
+
+def key_vote_label(druh: str | None, stav_name: str | None, akce: str | None) -> str:
+    """Plain-language label for a vote psp.cz records in a print's history (hist.id_hlas)."""
+    st, ak = stav_name or "", akce or ""
+    if st.startswith("3. čtení"):
+        if ak == "vrácen":
+            return "hlasování o vrácení návrhu do 2. čtení"
+        if ak == "opakovat":
+            return "hlasování o opakování 3. čtení"
+        return "závěrečné hlasování o návrhu (3. čtení)"
+    if st.startswith("1. čtení (§ 90"):
+        return "závěrečné hlasování o návrhu (schvalován už v 1. čtení podle § 90 odst. 2)"
+    if st.startswith("Sněmovna (Senát)"):
+        return "hlasování o zákonu, který vrátil Senát"
+    if st.startswith("Sněmovna (Prezident)"):
+        return "opětovné hlasování o zákonu, který vrátil prezident"
+    if druh == "Mezinárodní smlouva":
+        return "hlasování o souhlasu s mezinárodní smlouvou"
+    if st.startswith("1. čtení") and ak == "vrácen":
+        return "hlasování o vrácení návrhu předkladateli k dopracování (1. čtení)"
+    if st.startswith("1. čtení") and ak == "odročeno":
+        return "hlasování o odročení projednávání (1. čtení)"
+    if st.startswith("1. čtení") and ak in ("zamítnut", "zamítnuto"):
+        return "hlasování o zamítnutí návrhu v 1. čtení"
+    if st.startswith("1. čtení") and druh == "Zpráva a jiné":
+        return "hlasování o usnesení k dokumentu"
+    return f"rozhodující hlasování ({st or 'fáze neuvedena'}: {ak or 'výsledek neuveden'})"
+
+
+def _agenda(d: PspData) -> tuple[dict, dict, dict]:
+    """Agenda items and print history for this term.
+
+    Returns ({(sitting no, item no): [bod rows]}, {id_tisk: tisk no},
+    hist) where hist = (id_bod -> set of readings, id_hlas -> key-vote label).
+    """
     with zipfile.ZipFile(d.raw / "schuze.zip") as zf:
         schuze = {r[0]: r[2] for r in read_unl(zf, "schuze.unl") if r[1] == d.term_organ}
-        with zipfile.ZipFile(d.raw / "tisky.zip") as zt:
-            tisk_no = {r[0]: r[3] for r in read_unl(zt, "tisky.unl") if col(r, 7) == d.term_organ}
-        out = {}
+        items = defaultdict(dict)
         for r in read_unl(zf, "bod_schuze.unl"):
-            if r[1] in schuze and col(r, 2) and col(r, 4) and r[2] in tisk_no:
-                out[(schuze[r[1]], r[4])] = tisk_no[r[2]]
-    return out
+            if r[1] in schuze and col(r, 4) and r[4] != "0":
+                items[(schuze[r[1]], r[4])][r[0]] = r
+    with zipfile.ZipFile(d.raw / "tisky.zip") as zt:
+        names = set(zt.namelist())
+
+        def table(name):
+            return read_unl(zt, name) if name in names else iter(())
+
+        tisky = {r[0]: r for r in read_unl(zt, "tisky.unl") if col(r, 7) == d.term_organ}
+        druh = {r[0]: r[2] for r in table("druh_tisku.unl")}
+        typ_stavu = {r[0]: r[1] for r in table("typ_stavu.unl")}
+        stavy = {r[0]: typ_stavu.get(r[1]) for r in table("stavy.unl")}
+        akce = {r[0]: r[1] for r in table("typ_akce.unl")}
+        prechody = {r[0]: (stavy.get(r[1]), akce.get(r[3])) for r in table("prechody.unl")}
+        by_bod, by_vote = defaultdict(set), {}
+        for h in table("hist.unl"):
+            if h[1] not in tisky or h[4] not in prechody:
+                continue
+            stav_name, ak = prechody[h[4]]
+            if col(h, 5) and (rd := reading(stav_name)):
+                by_bod[h[5]].add(rd)
+            if col(h, 3):
+                by_vote[h[3]] = key_vote_label(druh.get(tisky[h[1]][1]), stav_name, ak)
+    return ({k: list(v.values()) for k, v in items.items()},
+            {k: r[3] for k, r in tisky.items()}, (by_bod, by_vote))
 
 
 def ingest_votes(conn: sqlite3.Connection, d: PspData, poslanci: dict[str, int]) -> int:
     zip_path = d.raw / f"hl-{d.term}ps.zip"
-    agenda = _agenda_bills(d)
+    items, tisk_no, (bod_stage, key_votes) = _agenda(d)
     bills = {r[0] for r in conn.execute("SELECT id FROM bill WHERE chamber='psp' AND term=?", (d.term,))}
     obdobi = _obdobi_no(d)
     with zipfile.ZipFile(zip_path) as zf:
@@ -258,18 +369,23 @@ def ingest_votes(conn: sqlite3.Connection, d: PspData, poslanci: dict[str, int])
             if r[1] != d.term_organ:
                 continue
             day = cz_date(r[5])
-            tisk = agenda.get((r[2], r[4]))
+            title = clean_title(col(r, 15) or col(r, 16))
+            bod = pick_agenda_item(items.get((r[2], r[4]), []), title)
+            tisk = tisk_no.get(bod[2]) if bod else None
             bill_id = f"psp:{d.term}:{tisk}" if tisk and f"psp:{d.term}:{tisk}" in bills else None
             outcome = "void" if r[0] in void else OUTCOMES.get(col(r, 14) or "", "other")
             events[r[0]] = (day, col(r, 6))
             conn.execute(
                 "INSERT OR REPLACE INTO vote_event (id, chamber, term, date, time, session, number, title, title_detail,"
-                " outcome, yes_count, no_count, abstain_count, present_count, quorum, bill_id, url)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " outcome, yes_count, no_count, abstain_count, present_count, quorum, bill_id, url,"
+                " agenda_id, agenda, stage, key_vote)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (f"psp:{d.term}:{r[0]}", "psp", d.term, day, col(r, 6), r[2], r[3],
-                 col(r, 15) or col(r, 16), col(r, 16), outcome,
+                 title, clean_title(col(r, 16)), outcome,
                  _int(r[7]), _int(r[8]), _int(r[9]), _int(r[11]), _int(r[12]), bill_id,
-                 f"{BASE_URL}/sqw/hlasy.sqw?g={r[0]}"),
+                 f"{BASE_URL}/sqw/hlasy.sqw?g={r[0]}",
+                 f"psp:bod:{bod[0]}" if bod else None, _agenda_title(bod),
+                 stage_label(bod_stage.get(bod[0], set())) if bod else None, key_votes.get(r[0])),
             )
         h_files = sorted(n for n in names if n.startswith(f"hl{d.term}h"))
         batch = []
@@ -287,6 +403,16 @@ def ingest_votes(conn: sqlite3.Connection, d: PspData, poslanci: dict[str, int])
         _flush(conn, batch)
     conn.commit()
     return len(events)
+
+
+def _agenda_title(bod: list[str] | None) -> str | None:
+    """Full agenda item title, e.g. 'Vládní návrh zákona o … /sněmovní tisk 52/'."""
+    if not bod:
+        return None
+    name, tail = col(bod, 5), col(bod, 6)
+    if tail and tail != "Není sn.tiskem":
+        return f"{name} {tail}" if name else tail
+    return name
 
 
 def _excused(windows, time: str | None) -> bool:
