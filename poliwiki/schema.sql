@@ -87,7 +87,13 @@ CREATE TABLE IF NOT EXISTS vote_event (
     quorum        INTEGER,
     bill_id       TEXT REFERENCES bill(id),
     doc_ref       TEXT,                 -- source document reference, e.g. 'A10-0027/2024'
-    url           TEXT
+    url           TEXT,
+    -- What was voted on, from the source's own data (no generated text):
+    agenda_id     TEXT,                 -- agenda item / debate the vote belongs to, e.g. 'psp:bod:59238'
+    agenda        TEXT,                 -- full title of that agenda item
+    stage         TEXT,                 -- legislative stage of the item, e.g. '3. čtení'
+    motion        TEXT,                 -- what exactly was put to the vote, when the source says
+    key_vote      TEXT                  -- set when the source records this vote as the decisive one
 );
 CREATE INDEX IF NOT EXISTS ix_vote_event_chamber_date ON vote_event(chamber, date);
 

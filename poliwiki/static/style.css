@@ -190,3 +190,15 @@ svg .medmark { fill: var(--ink); stroke: var(--surface); stroke-width: 2; }
   #votes td.club:not(:empty)::before { content: "klub: "; color: var(--muted); }
   #votes td.res { grid-row: 3; text-align: right; }
 }
+
+/* what a vote was about */
+.about { margin-top: 3px; color: var(--ink-2); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.about .lbl { color: var(--muted); }
+.facts { color: var(--muted); margin-top: 2px; }
+.note-proc { color: var(--muted); font-style: italic; }
+.tag { display: inline-block; font-size: 12px; line-height: 1.5; padding: 0 8px; border-radius: 999px; vertical-align: 1px; }
+.tag.key { background: var(--accent-soft); color: var(--accent); }
+details.howto { margin: 4px 0 12px; font-size: 14px; color: var(--ink-2); max-width: 75ch; }
+details.howto summary { cursor: pointer; color: var(--accent); }
+details.howto ul { padding-left: 20px; }
+details.howto li { margin: 6px 0; }

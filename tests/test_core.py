@@ -60,13 +60,24 @@ def raw(tmp_path):
              "15.10.2025", "", "", "", "Návrh poslanců na vydání zákona"],
         ]))
         z.writestr("predkladatel.unl", _unl([["5000", "11", "2", "0"], ["5000", "10", "1", "0"]]))
+        z.writestr("typ_stavu.unl", _unl([["5", "3. čtení"]]))
+        z.writestr("stavy.unl", _unl([["50", "5", "2", "", "", ""]]))
+        z.writestr("typ_akce.unl", _unl([["22", "souhlas"]]))
+        z.writestr("prechody.unl", _unl([["70", "50", "6", "22", "1"]]))
+        # print history: vote 1 approved the bill in the 3rd reading, in agenda item 1
+        z.writestr("hist.unl", _unl([["9", "5000", "2025-11-05 00", "1", "70", "1", "1"] + [""] * 8]))
     with zipfile.ZipFile(tmp_path / "schuze.zip", "w") as z:
         z.writestr("schuze.unl", _unl([["843", "174", "1", "2025-11-03 14", "", "", ""]]))
-        z.writestr("bod_schuze.unl", _unl([["1", "843", "5000", "0", "4", "Novela"]]))
+        # item 4 as changed during the sitting, and an unrelated item that had number 4 in the invitation
+        z.writestr("bod_schuze.unl", _unl([
+            ["2", "843", "", "0", "4", "Volba předsedy výboru", "", "", "1", "1"],
+            ["1", "843", "5000", "5", "4", "Návrh poslanců na vydání zákona", "/sněmovní tisk 7/", "", "0", ""],
+        ]))
     with zipfile.ZipFile(tmp_path / "hl-2025ps.zip", "w") as z:
         z.writestr("hl2025s.unl", _unl([
             ["1", "174", "1", "1", "4", "05.11.2025", "10:00", "1", "0", "0", "0", "2", "2", "N", "A", "Novela", ""],
-            ["2", "174", "1", "2", "4", "05.11.2025", "11:00", "0", "1", "0", "0", "1", "1", "N", "R", "Novela", ""],
+            ["2", "174", "1", "2", "4", "05.11.2025", "11:00", "0", "1", "0", "0", "1", "1", "N", "R", "Novela**poslanců", ""],
+            ["3", "174", "1", "3", "0", "05.11.2025", "12:00", "2", "0", "0", "0", "2", "2", "N", "A", "Pořad schůze", ""],
         ]))
         z.writestr("hl2025h1.unl", _unl([
             ["900", "1", "A"], ["901", "1", "K"], ["900", "2", "B"], ["901", "2", "@"],
@@ -89,6 +100,13 @@ def test_psp_ingest(conn, raw):
     }
     ev = conn.execute("SELECT * FROM vote_event WHERE id='psp:2025:2'").fetchone()
     assert ev["outcome"] == "rejected" and ev["bill_id"] == "psp:2025:7" and ev["date"] == "2025-11-05"
+    assert ev["title"] == "Novela poslanců"  # '**' is a line break in psp.cz short titles
+    assert ev["agenda"] == "Návrh poslanců na vydání zákona /sněmovní tisk 7/" and ev["agenda_id"] == "psp:bod:1"
+    assert ev["stage"] == "3. čtení" and ev["key_vote"] is None
+    first = conn.execute("SELECT * FROM vote_event WHERE id='psp:2025:1'").fetchone()
+    assert first["key_vote"] == "závěrečné hlasování o návrhu (3. čtení)"
+    proc = conn.execute("SELECT * FROM vote_event WHERE id='psp:2025:3'").fetchone()
+    assert proc["agenda"] is None and proc["bill_id"] is None
     bill = conn.execute("SELECT * FROM bill").fetchone()
     assert bill["proposer_kind"] == "mps"
     assert conn.execute("SELECT count(*) FROM bill_sponsor WHERE person_id IS NOT NULL").fetchone()[0] == 2
@@ -114,6 +132,19 @@ def test_senat_feed_parsing():
     assert a["title"] == "Návrh senátního návrhu zákona - o Policii" and a["time"] == "17:30"
     assert b["print"] is None and b["option"] == "abstain" and b["outcome"] == "rejected"
     assert b["date"] == "2026-10-22"  # converted to Prague time
+
+
+def test_senat_vote_event_describes_motion(conn):
+    pid = db.resolve_person(conn, "senat", "1", given_name="A", family_name="B")
+    items = list(senat.parse_feed(FEED))
+    items[0]["motion"] = "vrátit PS"
+    senat.ingest_votes(conn, "1", pid, 15, items)
+    a = conn.execute("SELECT * FROM vote_event WHERE id='senat:15:31:21'").fetchone()
+    assert a["motion"] == "vrátit Poslanecké sněmovně s pozměňovacími návrhy"
+    assert a["key_vote"].startswith("závěrečné hlasování") and a["agenda"].endswith("(senátní tisk 300/15)")
+    b = conn.execute("SELECT * FROM vote_event WHERE id='senat:15:31:2'").fetchone()
+    assert b["key_vote"] is None and b["agenda"] is None and b["motion"] == "schválit pořad"
+    assert senat.motion_label("3.pozměňovací návrh") == "3. pozměňovací návrh"
 
 
 def test_proposer_kind():
@@ -149,3 +180,30 @@ def test_http_backs_off_on_429(monkeypatch, tmp_path):
     monkeypatch.setattr(http, "CACHE_DIR", tmp_path)
     assert http.get("https://example.org/x") == b"ok"
     assert len(calls) == 3 and sleeps.count(7.0) == 2
+
+
+def test_agenda_item_choice_and_stage_labels():
+    # two items with the same number in the changed agenda: the title decides
+    a = ["1", "s", "", "0", "7", "Ústní interpelace", "", "", "1", ""]
+    b = ["2", "s", "", "0", "7", "Návrh na potvrzení předsedy výboru", "", "", "0", ""]
+    assert psp.pick_agenda_item([a, b], "Návrh na potvrzení předsedy výboru PS") is b
+    assert psp.pick_agenda_item([], "x") is None
+    assert psp.stage_label({"3. čtení", "2. čtení"}) == "2. a 3. čtení"
+    assert psp.stage_label({"po vrácení Senátem"}) == "po vrácení Senátem"
+    assert psp.reading("1. čtení (§ 90, odst. 2) - ob. rozprava") == "1. čtení"
+    assert psp.key_vote_label("Vládní návrh zákona", "Sněmovna (Senát)", "setrváno") == "hlasování o zákonu, který vrátil Senát"
+
+
+def test_ep_motion_and_procedure():
+    from poliwiki.sources import ep
+    assert ep.procedure("Monitorovací rámec pro lesy ***I") == ("Monitorovací rámec pro lesy", "řádný legislativní postup, 1. čtení")
+    assert ep.procedure("Usnesení o Ukrajině") == ("Usnesení o Ukrajině", None)
+    dec = {"headingLabel": {"cs": "Návrh na zamítnutí návrhu Komise", "en": "Proposal to reject"},
+           "referenceText": {"cs": "návrh na zamítnutí", "en": "Proposal for rejection"},
+           "responsible_organization_label": {"cs": "výbor"}}
+    assert ep.motion(dec) == "Návrh na zamítnutí návrhu Komise · předložil: výbor"
+    assert not ep.is_whole_text(dec)
+    assert ep.is_whole_text({"referenceText": {"en": "Text as a whole", "cs": "celé znění"}})
+    assert ep.is_whole_text({"referenceText": {"en": "Motion for a resolution (as a whole)"}})
+    assert not ep.is_whole_text({"referenceText": {"en": "Motion for a resolution, § 4"}})
+    assert ep.motion({"referenceText": {"cs": "§ 9"}, "responsible_organization_label": {"cs": "původní znění"}}) == "§ 9 (původní znění)"

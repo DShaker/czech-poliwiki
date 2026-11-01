@@ -117,9 +117,57 @@ def ingest_meps(conn: sqlite3.Connection, term: int) -> dict[str, int]:
     return ids
 
 
-def _title(item: dict) -> str | None:
-    lab = item.get("activity_label") or {}
+def _title(item: dict, key: str = "activity_label") -> str | None:
+    lab = item.get(key) or {}
+    if isinstance(lab, str):
+        return lab
     return lab.get("cs") or lab.get("en") or lab.get("mul") or next(iter(lab.values()), None)
+
+
+# Procedure markers the EP appends to agenda titles (Rules of Procedure, Annex on
+# the symbols used in the agenda): *** I/II/III ordinary legislative procedure
+# readings, *** consent, * consultation; no marker = non-legislative.
+PROCEDURE = (("***III", "řádný legislativní postup, 3. čtení"), ("***II", "řádný legislativní postup, 2. čtení"),
+             ("***I", "řádný legislativní postup, 1. čtení"), ("***", "postup souhlasu"),
+             ("*", "postup konzultace"))
+# decision labels the EP uses for the vote on a whole text (en referenceText, lower case)
+WHOLE_TEXT = ("single vote", "provisional agreement", "commission proposal", "proposal for a council decision",
+              "draft council decision", "proposal for a decision", "draft decision")
+
+
+def procedure(title: str | None) -> tuple[str | None, str | None]:
+    """'Cadre … ***I' -> ('Cadre …', 'řádný legislativní postup, 1. čtení')."""
+    t = (title or "").rstrip()
+    for marker, label in PROCEDURE:
+        if t.endswith(marker):
+            return t[: -len(marker)].rstrip(), label
+    return title, None
+
+
+def _ref_en(dec: dict) -> str:
+    ref = dec.get("referenceText") or {}
+    return (ref.get("en") if isinstance(ref, dict) else ref or "").strip().lower()
+
+
+def motion(dec: dict) -> str | None:
+    """What exactly was put to the vote, e.g. 'Pozměňovací návrh 12 · předložil: výbor'."""
+    heading = _title(dec, "headingLabel")
+    ref = _title(dec, "referenceText")
+    who = _title(dec, "responsible_organization_label")
+    parts = [p for p in (heading, ref if ref and heading and ref.lower() not in heading.lower() else None) if p]
+    if not parts and ref:
+        parts = [ref]
+    text = " ".join(" – ".join(parts).split())
+    if who and who.lower() in ("původní znění", "original text"):
+        text = f"{text} (původní znění)" if text else "původní znění"
+    elif who:
+        text = f"{text} · předložil: {who}" if text else f"předložil: {who}"
+    return text or None
+
+
+def is_whole_text(dec: dict) -> bool:
+    r = _ref_en(dec)
+    return r == "motion for a resolution" or "as a whole" in r or r.startswith(WHOLE_TEXT)
 
 
 def ingest_votes(conn: sqlite3.Connection, term: int, meps: dict[str, int], since: str | None = None) -> int:
@@ -148,28 +196,32 @@ def _ingest_meeting(conn, term, mtg, meps, cz_mandates, cache) -> int:
     mid, day = mtg["activity_id"], mtg["activity_date"]
     participants = {_pid(p) for p in mtg.get("had_participant_person", [])}
     excused = {_pid(p) for p in mtg.get("had_excused_person", [])}
-    titles: dict[str, tuple[str | None, str | None]] = {}
+    titles: dict[str, tuple[str | None, str | None, str]] = {}
     for item in _paged(f"meetings/{mid}/vote-results", cache=cache):
         docs = item.get("based_on_a_realization_of") or []
         for dec in item.get("consists_of", []):
-            titles[_pid(dec)] = (_title(item), docs[0].rsplit("/", 1)[-1] if docs else None)
+            titles[_pid(dec)] = (_title(item), docs[0].rsplit("/", 1)[-1] if docs else None, item["activity_id"])
     n = 0
     for dec in _paged(f"meetings/{mid}/decisions", cache=cache):
         if not dec.get("decision_method", "").endswith("ROLLCALL"):
             continue
         vid = dec.get("notation_votingId") or dec["activity_id"]
         ev = f"ep:{vid}"
-        parent_title, doc = titles.get(dec["activity_id"], (None, None))
+        parent_title, doc, item_id = titles.get(dec["activity_id"], (None, None, None))
+        agenda, proc = procedure(parent_title)
         conn.execute(
             "INSERT OR REPLACE INTO vote_event (id, chamber, term, date, time, session, number, title, title_detail,"
-            " outcome, yes_count, no_count, abstain_count, present_count, doc_ref, url)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " outcome, yes_count, no_count, abstain_count, present_count, doc_ref, url,"
+            " agenda_id, agenda, stage, motion, key_vote)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (ev, "ep", str(term), day, (dec.get("activity_start_date") or "")[11:19] or None, mid,
              dec.get("activity_order"), parent_title, _title(dec),
              OUTCOME.get(dec.get("decision_outcome", "").rsplit("/", 1)[-1], "other"),
              dec.get("number_of_votes_favor"), dec.get("number_of_votes_against"),
              dec.get("number_of_votes_abstention"), dec.get("number_of_attendees"), doc,
-             f"https://data.europarl.europa.eu/{dec['id']}"),
+             f"https://data.europarl.europa.eu/{dec['id']}",
+             f"ep:{item_id}" if item_id else None, agenda, proc, motion(dec),
+             "hlasování o celém textu" if is_whole_text(dec) else None),
         )
         options: dict[str, str] = {}
         for key, opt in (("had_voter_favor", "yes"), ("had_voter_against", "no"), ("had_voter_abstention", "abstain")):

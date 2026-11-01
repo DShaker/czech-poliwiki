@@ -18,7 +18,21 @@ def connect(path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL") if str(path) != ":memory:" else None
     conn.executescript(resources.files("poliwiki").joinpath("schema.sql").read_text("utf-8"))
+    _migrate(conn)
     return conn
+
+
+# columns added after the first release; CREATE TABLE IF NOT EXISTS leaves old databases without them
+ADDED_COLUMNS = {"vote_event": ("agenda_id", "agenda", "stage", "motion", "key_vote")}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for c in cols:
+            if c not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
+    conn.commit()
 
 
 def fold(s: str | None) -> str:

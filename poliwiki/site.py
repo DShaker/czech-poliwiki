@@ -21,6 +21,7 @@ from importlib import resources
 from pathlib import Path
 
 from .db import fold
+from .sources.senat import PROCEDURAL_MOTIONS
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,21 @@ PROPOSER = {"government": "vládní návrh (předkládá člen vlády)", "mps": 
             "senate": "návrh Senátu / senátorů", "region": "návrh krajského zastupitelstva", "other": "jiný dokument"}
 SOURCE_LABEL = {"psp": "psp.cz", "senat": "senat.cz", "ep": "europarl.europa.eu"}
 
+# Fixed explanations for votes whose source title says nothing about the subject.
+# Keyed by (chamber, title); the text describes the procedure, never the motion.
+VOTE_NOTES = {
+    ("psp", "Pořad schůze"): "Procedurální hlasování o pořadu schůze: Sněmovna rozhoduje, které body projedná a kdy "
+                             "(zařazení, vyřazení nebo přesunutí bodu). Konkrétní návrh je v záznamu hlasování.",
+    ("psp", ""): "psp.cz u tohoto hlasování neuvádí název ani bod pořadu. Konkrétní návrh je v záznamu hlasování.",
+}
+SENAT_PROCEDURAL_NOTE = "Procedurální hlasování o postupu jednání Senátu, ne o obsahu návrhu."
+
+
+def vote_note(chamber: str, title: str, agenda: str | None, motion: str | None) -> str:
+    if chamber == "senat":
+        return SENAT_PROCEDURAL_NOTE if motion in PROCEDURAL_MOTIONS else ""
+    return "" if agenda else VOTE_NOTES.get((chamber, title), "")
+
 
 def term_label(chamber: str, term: str) -> str:
     if chamber == "psp":
@@ -54,6 +70,7 @@ class Term:
     chamber: str
     term: str
     events: list = field(default_factory=list)       # rows for the events JSON
+    agendas: list = field(default_factory=list)      # [agenda title, stage] referenced by events
     codes: dict = field(default_factory=dict)        # person -> list of option codes
     line: dict = field(default_factory=dict)         # person -> list of club-majority codes
     stats: dict = field(default_factory=dict)        # person -> dict
@@ -102,15 +119,15 @@ def analyse_term(conn, chamber: str, term: str, people: set[int]) -> Term:
     t = Term(chamber, term)
     evs = conn.execute(
         "SELECT e.id, e.date, e.title, e.title_detail, e.outcome, e.url, b.number, b.url, e.yes_count, e.no_count,"
-        " e.abstain_count, e.doc_ref, e.session, e.number FROM vote_event e LEFT JOIN bill b ON b.id = e.bill_id"
+        " e.abstain_count, e.doc_ref, e.session, e.number, e.agenda_id, e.agenda, e.stage, e.motion, e.key_vote"
+        " FROM vote_event e LEFT JOIN bill b ON b.id = e.bill_id"
         " WHERE e.chamber=? AND e.term=? ORDER BY e.date, e.time, CAST(e.session AS INT), CAST(e.number AS INT)",
         (chamber, term),
     ).fetchall()
     idx = {r[0]: k for k, r in enumerate(evs)}
     dates = [r[1] for r in evs]
     void = {k for k, r in enumerate(evs) if r[4] == "void"}
-    t.events = [[r[1], r[2] or "", r[3] or "", r[4] or "", r[5] or "", r[6] or r[11] or "", r[7] or "",
-                 r[8], r[9], r[10], r[12] or "", r[13] or ""] for r in evs]
+    t.events, t.agendas = event_rows(chamber, evs)
     club_at = club_lookup(conn, chamber)
     n = len(evs)
     votes = defaultdict(list)
@@ -157,6 +174,36 @@ def analyse_term(conn, chamber: str, term: str, people: set[int]) -> Term:
     rates = [s["differ_rate"] for s in t.stats.values() if s["comparable"] >= 100]
     t.dev_median = statistics.median(rates) if rates else None
     return t
+
+
+def event_rows(chamber: str, evs) -> tuple[list, list]:
+    """Rows for the per-term events JSON, plus the shared agenda list they point to.
+
+    Row: date, title, detail, outcome, url, print no, print url, yes, no, abstain,
+    session, number, agenda index (-1 = none), motion, key-vote label,
+    position of the vote within its agenda item, votes on that item, note.
+    """
+    agendas, a_idx = [], {}
+    per_item = Counter(r[14] for r in evs if r[14])
+    seen = Counter()
+    rows = []
+    for r in evs:
+        title, agenda_id, agenda, stage = r[2] or "", r[14], r[15], r[16]
+        ai = -1
+        if agenda or stage:
+            key = (agenda or "", stage or "")
+            if key not in a_idx:
+                a_idx[key] = len(agendas)
+                agendas.append(list(key))
+            ai = a_idx[key]
+        pos = cnt = 0
+        if agenda_id:
+            seen[agenda_id] += 1
+            pos, cnt = seen[agenda_id], per_item[agenda_id]
+        note = vote_note(chamber, title, agenda, r[17])
+        rows.append([r[1], title, r[3] or "", r[4] or "", r[5] or "", r[6] or r[11] or "", r[7] or "",
+                     r[8], r[9], r[10], r[12] or "", r[13] or "", ai, r[17] or "", r[18] or "", pos, cnt, note])
+    return rows, agendas
 
 
 # ---------------------------------------------------------------- helpers
@@ -355,7 +402,7 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
         t = analyse_term(conn, chamber, term, set(people))
         terms.append(t)
         (out / "v" / f"{t.key}.json").write_text(
-            json.dumps({"chamber": chamber, "term": term, "events": t.events}, ensure_ascii=False, separators=(",", ":")),
+            json.dumps({"chamber": chamber, "term": term, "agendas": t.agendas, "events": t.events}, ensure_ascii=False, separators=(",", ":")),
             "utf-8")
         log.info("%s: %d events, %d profiled members", t.key, len(t.events), len(t.codes))
 
@@ -527,8 +574,24 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
 <input type="search" id="q" placeholder="Hledat v názvu, např. rozpočet" aria-label="Hledat">
 <select id="term" aria-label="Období"></select>
 <select id="opt" aria-label="Volba"><option value="">všechny volby</option><option value="y">pro</option><option value="n">proti</option><option value="a">zdržel/a se</option><option value="v">nehlasoval/a</option><option value="x">nepřítomen/a</option><option value="e">omluven/a</option></select>
+<select id="kind" aria-label="Druh hlasování"><option value="">všechna hlasování</option><option value="k">jen závěrečná hlasování</option><option value="p">bez procedurálních</option></select>
 <label><input type="checkbox" id="dev"> jen odlišně od klubu</label>
 </div>
+<details class="howto"><summary>Jak číst seznam hlasování</summary>
+<p>U každého hlasování je nejdřív jeho název ze zdroje a pod ním <strong>bod pořadu</strong>, ke kterému patří, v plném znění
+(u zákonů včetně předkladatele a čísla tisku). Názvy a údaje pocházejí z otevřených dat Sněmovny, Senátu a EP. Web k nim přidává
+jen pevná vysvětlení postupů (např. co je hlasování o pořadu schůze), nic neshrnuje ani nehodnotí.</p>
+<ul>
+<li><span class="tag key">závěrečné hlasování</span> Sněmovna: hlasování, které psp.cz zapsalo do historie tisku jako rozhodující
+(např. o návrhu zákona jako celku ve 3. čtení, o zákonu vráceném Senátem). EP: hlasování o celém textu.
+Neúspěšná závěrečná hlasování psp.cz do historie tisku zapisuje jen někdy, proto tento filtr některá zamítnutí neukáže.</li>
+<li><strong>Čtení</strong>: zákon prochází ve Sněmovně třemi čteními. V 1. čtení se rozhoduje, zda se jím Sněmovna bude dál zabývat,
+ve 2. čtení se podávají pozměňovací návrhy, ve 3. čtení se o nich hlasuje a nakonec o návrhu jako celku.
+Proto k jednomu bodu bývá mnoho hlasování; „hlasování 3 z 12 k bodu“ říká, kolikáté to bylo.</li>
+<li><strong>Procedurální</strong> hlasování (např. o pořadu schůze) rozhodují o postupu jednání, ne o obsahu návrhu.
+Které konkrétní návrhy zazněly, uvádí jen záznam hlasování a stenozáznam, na které vede odkaz v názvu.</li>
+</ul>
+</details>
 <p id="count" class="muted"></p>
 <div class="tablewrap"><table id="votes"><thead><tr><th>Datum</th><th>Hlasování</th><th>Volba</th><th>Většina klubu</th><th>Výsledek</th></tr></thead><tbody></tbody></table></div>
 <div class="pager"><button id="prev">Předchozí</button><span id="pageinfo"></span><button id="next">Další</button></div>

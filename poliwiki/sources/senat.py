@@ -37,6 +37,26 @@ OUTCOMES = {"Návrh byl přijat": "passed", "Návrh byl zamítnut": "rejected", 
 DESC_RE = re.compile(r"^\s*(\d+)\s+-\s+(.*)\s+-\s+([^;-]+?)\s*;\s*Senát odhlasoval:\s*(.*?)\s*$", re.S)
 PRINT_RE = re.compile(r"^(N\s+)?\d+/\d+$")
 
+# Motion names in the feed are abbreviated; spell out the ones that are not plain words.
+MOTION_LABEL = {
+    "vrátit PS": "vrátit Poslanecké sněmovně s pozměňovacími návrhy",
+    "schválit s PN": "schválit s pozměňovacími návrhy",
+    "nezabývat se": "nezabývat se (podle čl. 48 Ústavy je tím zákon přijat)",
+    "vrátit k dopracování": "vrátit navrhovateli k dopracování",
+}
+# Motions that decide a print as a whole (the Senate's final word on it).
+FINAL_MOTIONS = {"schválit", "zamítnout", "vrátit PS", "schválit s PN", "nezabývat se",
+                 "dát souhlas k ratifikaci", "vyslovit souhlas", "vrátit k dopracování"}
+PROCEDURAL_MOTIONS = {"procedurální návrh", "změna pořadu", "schválení pořadu", "určení ověřovatelů",
+                      "určení zpravodaje"}
+AMENDMENT_RE = re.compile(r"^(\d+)\.\s*pozměňovací návrh$")
+
+
+def motion_label(m: str) -> str:
+    if am := AMENDMENT_RE.match(m):
+        return f"{am.group(1)}. pozměňovací návrh"
+    return MOTION_LABEL.get(m, m)
+
 
 def current_term() -> int:
     """The Senate term (funkční období) senat.cz currently shows, e.g. 15."""
@@ -267,12 +287,17 @@ def ingest_votes(conn, pid_web: str, person_id: int, term: int, items: list[dict
                 (bill_id, "senat", str(term), v["print"], v["title"],
                  f"{SENAT}/xqw/xervlet/pssenat/historie?action=detail&value={v['print'].split('/')[0].replace('N ', 'N')}"),
             )
+        final = bool(v["print"]) and v["motion"] in FINAL_MOTIONS
         cur = conn.execute(
             "INSERT OR IGNORE INTO vote_event (id, chamber, term, date, time, session, number, title, title_detail,"
-            " outcome, bill_id, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " outcome, bill_id, url, agenda_id, agenda, motion, key_vote) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (ev, "senat", str(term), v["date"], v["time"], v["session"], v["number"], v["title"],
-             v["motion"], v["outcome"], bill_id,
-             f"{SENAT}/xqw/xervlet/pssenat/hlasy?O={term}&S={v['session']}"),
+             None, v["outcome"], bill_id,
+             f"{SENAT}/xqw/xervlet/pssenat/hlasy?O={term}&S={v['session']}",
+             f"senat:{term}:{v['session']}:{v['print'] or v['title']}",
+             f"{v['title']} (senátní tisk {v['print']})" if v["print"] else None,
+             motion_label(v["motion"]),
+             f"závěrečné hlasování o tisku: {motion_label(v['motion'])}" if final else None),
         )
         n_ev += cur.rowcount
         conn.execute(
