@@ -206,4 +206,5 @@ def test_ep_motion_and_procedure():
     assert ep.is_whole_text({"referenceText": {"en": "Text as a whole", "cs": "celé znění"}})
     assert ep.is_whole_text({"referenceText": {"en": "Motion for a resolution (as a whole)"}})
     assert not ep.is_whole_text({"referenceText": {"en": "Motion for a resolution, § 4"}})
+    assert not ep.is_whole_text({"referenceText": {"cs": "pn. 3"}}) and not ep.is_whole_text({})
     assert ep.motion({"referenceText": {"cs": "§ 9"}, "responsible_organization_label": {"cs": "původní znění"}}) == "§ 9 (původní znění)"

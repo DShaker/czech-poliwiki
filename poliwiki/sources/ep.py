@@ -146,7 +146,9 @@ def procedure(title: str | None) -> tuple[str | None, str | None]:
 
 def _ref_en(dec: dict) -> str:
     ref = dec.get("referenceText") or {}
-    return (ref.get("en") if isinstance(ref, dict) else ref or "").strip().lower()
+    # some decisions carry referenceText without an English label, or none at all
+    en = ref.get("en") if isinstance(ref, dict) else ref
+    return (en or "").strip().lower()
 
 
 def motion(dec: dict) -> str | None:
