@@ -54,7 +54,7 @@ Output: `data/poliwiki.sqlite`. Raw HTTP responses are cached in `data/cache`.
   consent banner). The tracking script is added to every page when `GOATCOUNTER_CODE`
   is set at build time; `poliwiki visits` reads the totals with a read-only token in
   `GOATCOUNTER_API_KEY` into `data/visits.json`. The publish workflow takes the code
-  from the repo variable `GOATCOUNTER_CODE` (default `czech-poliwiki`) and the token
+  from the repo variable `GOATCOUNTER_CODE` (default `dshaker01`) and the token
   from the repo secret `GOATCOUNTER_API_KEY`; without the token the page says there
   is no data yet and the build carries on.
 
