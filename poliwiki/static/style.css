@@ -38,7 +38,8 @@ a:hover { text-decoration-thickness: 2px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ink); text-decoration: none; letter-spacing: -.01em; }
 .mark { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: var(--ink); color: var(--surface);
   font-size: 12px; font-weight: 800; letter-spacing: .02em; }
-.top nav { display: flex; gap: 4px; }
+.top nav { display: flex; gap: 4px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.top nav a { flex: none; }
 .top nav a { color: var(--ink-2); text-decoration: none; padding: 6px 12px; border-radius: 999px; font-size: 15px; font-weight: 500; }
 .top nav a:hover { background: var(--surface-2); color: var(--ink); }
 .top nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
@@ -177,7 +178,8 @@ svg .medmark { fill: var(--ink); stroke: var(--surface); stroke-width: 2; }
 
 @media (max-width: 640px) {
   .top-in { padding: 8px 16px; }
-  .top nav a { padding: 5px 10px; font-size: 14px; }
+  .top nav { gap: 0; }
+  .top nav a { padding: 5px 7px; font-size: 13.5px; }
   .brand { font-size: 15px; }
   th, td { padding: 8px 12px; }
   .chips-wrap { flex-direction: column; gap: 6px; }

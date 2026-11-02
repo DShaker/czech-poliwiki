@@ -31,6 +31,7 @@ def main(argv=None) -> None:
     site = sub.add_parser("site", help="build the static site")
     site.add_argument("--out", default="site")
 
+    sub.add_parser("visits", help="visitor totals from GoatCounter into data/visits.json (needs GOATCOUNTER_* env)")
     sub.add_parser("stats", help="row counts per table")
 
     a = p.parse_args(argv)
@@ -54,6 +55,9 @@ def main(argv=None) -> None:
     elif a.cmd == "site":
         from . import site
         site.build(conn, a.out)
+    elif a.cmd == "visits":
+        from . import visits
+        visits.update()
     elif a.cmd == "stats":
         for (t,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
             print(f"{t:16} {conn.execute(f'SELECT count(*) FROM {t}').fetchone()[0]:>10}")

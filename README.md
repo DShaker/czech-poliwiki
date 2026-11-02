@@ -49,6 +49,14 @@ Output: `data/poliwiki.sqlite`. Raw HTTP responses are cached in `data/cache`.
   photographer from the psp.cz image metadata. Initials when there is no photo.
 - `spektrum/`: per chamber and term, all members on both dimensions.
 - `metodika.html`: the method, in Czech, with the fit statistics of the current run.
+- `navstevnost.html`: visit counts (all time, last 30 and 7 days) and the privacy note.
+  Visits are counted by [GoatCounter](https://www.goatcounter.com) (no cookies, no
+  consent banner). The tracking script is added to every page when `GOATCOUNTER_CODE`
+  is set at build time; `poliwiki visits` reads the totals with a read-only token in
+  `GOATCOUNTER_API_KEY` into `data/visits.json`. The publish workflow takes the code
+  from the repo variable `GOATCOUNTER_CODE` (default `czech-poliwiki`) and the token
+  from the repo secret `GOATCOUNTER_API_KEY`; without the token the page says there
+  is no data yet and the build carries on.
 
 The UI is in Czech because the audience is Czech voters.
 
