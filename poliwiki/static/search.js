@@ -1,4 +1,6 @@
 // Politician list on the index page: search, chamber and club filters, sorting.
+// Columns "Návrhy" (law proposals presented) and "Nepřítomnost" (lifetime share of
+// votes absent or excused) come precomputed from site.py: b, bg, ab, ax, ae, ar.
 // State lives in the URL hash (#komora=psp&klub=ODS&razeni=club) so a filtered view can be shared.
 (function () {
   const data = JSON.parse(document.getElementById("data").textContent);
@@ -8,6 +10,7 @@
   const fold = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const coll = new Intl.Collator("cs");
+  const pct = (x) => `${(100 * x).toFixed(1).replace(".", ",")}\u00a0%`;
   const $ = (id) => document.getElementById(id);
 
   data.forEach((p) => {
@@ -25,7 +28,7 @@
     st.ch = CH[h.get("komora")] ? h.get("komora") : "";
     st.club = h.get("klub") || "";
     const [s, d] = (h.get("razeni") || "name").split("-");
-    st.sort = ["name", "club", "chamber"].includes(s) ? s : "name";
+    st.sort = SORTS[s] ? s : "name";
     st.desc = d === "desc";
     active.checked = h.get("vse") !== "1";
     q.value = h.get("q") || "";
@@ -43,8 +46,12 @@
 
   const chambersOf = (p) => (active.checked ? p.hc : p.h);
   const cmpName = (a, b) => coll.compare(a.f, b.f) || coll.compare(a.n, b.n);
+  // people without a value (MEPs for drafts, no votes for absence) always sort last
+  const byNum = (k) => (a, b) => ((a[k] ?? null) === null) - ((b[k] ?? null) === null) || (a[k] ?? 0) - (b[k] ?? 0) || cmpName(a, b);
   const SORTS = {
     name: cmpName,
+    drafts: byNum("b"),
+    absence: byNum("ab"),
     club: (a, b) => (!a.club - !b.club) || coll.compare(a.club, b.club) || cmpName(a, b),
     chamber: (a, b) => (CH_ORDER[chambersOf(a)[0]] ?? 9) - (CH_ORDER[chambersOf(b)[0]] ?? 9) || cmpName(a, b),
   };
@@ -86,7 +93,12 @@
 
     const rows = inCh.filter((p) => !st.club || (p.club || NONE) === st.club);
     rows.sort(SORTS[st.sort]);
-    if (st.desc) rows.reverse();
+    if (st.desc) {
+      // reverse, but keep people without a value at the end
+      const k = { drafts: "b", absence: "ab" }[st.sort];
+      const has = k ? rows.filter((p) => p[k] != null) : rows;
+      rows.splice(0, rows.length, ...has.reverse(), ...(k ? rows.filter((p) => p[k] == null) : []));
+    }
 
     sortSel.value = st.sort;
     document.querySelectorAll("#people th").forEach((th) => {
@@ -100,9 +112,15 @@
     empty.hidden = n > 0;
     body.innerHTML = rows.map((p) => {
       const chs = chambersOf(p).map((c) => `<span class="badge">${CH[c]}</span>`).join(" ");
-      const club = p.k ? esc(p.k) : p.kl ? `<span class="muted" title="poslední klub">${esc(p.kl)}</span>` : "";
+      let club = p.k ? esc(p.k) : p.kl ? `<span class="muted" title="poslední klub">${esc(p.kl)}</span>` : "";
+      if (p.pk) club = `<a href="strany/${p.pk}.html" title="Strana: ${esc(p.pn)}">${club || esc(p.pn)}</a>`;
+      const drafts = p.b == null ? `<span class="muted" title="Europoslanci návrhy zákonů nepředkládají">–</span>`
+        : `<span title="${p.bg ? `z toho ${p.bg} vládních (jako člen vlády)` : "návrhy zákonů"}">${p.b}</span>`;
+      const abs = p.ab == null ? "–"
+        : `<span title="nepřítomen/a ${p.ax}, omluven/a ${p.ae} z ${p.ar} hlasování">${pct(p.ab)}</span>`;
       return `<tr><td class="name"><a href="p/${p.s}.html">${esc(p.n)}</a></td><td class="ch">${chs}</td>`
-        + `<td class="club">${club}</td><td class="mand muted">${esc(p.c.join(", "))}</td></tr>`;
+        + `<td class="club">${club}</td><td class="num drafts" data-l="návrhy">${drafts}</td>`
+        + `<td class="num abs" data-l="nepřítomnost">${abs}</td><td class="mand muted">${esc(p.c.join(", "))}</td></tr>`;
     }).join("");
     writeHash();
   }

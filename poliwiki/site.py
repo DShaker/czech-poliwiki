@@ -21,6 +21,7 @@ from importlib import resources
 from pathlib import Path
 
 from .db import fold
+from .parties import party_of
 from .sources.senat import PROCEDURAL_MOTIONS
 
 log = logging.getLogger(__name__)
@@ -232,6 +233,18 @@ def fmt_date(d: str | None) -> str:
         return d
 
 
+def age(birth: str | None, on: str) -> int | None:
+    """Whole years between two ISO dates; None without a full birth date."""
+    if not birth or len(birth) < 10:
+        return None
+    b, d = birth[:10], on[:10]
+    return int(d[:4]) - int(b[:4]) - (d[5:] < b[5:])
+
+
+def years(n: int) -> str:
+    return f"{n} {'rok' if n == 1 else 'roky' if 2 <= n <= 4 else 'let'}"
+
+
 def pct(x: float | None, digits: int = 1) -> str:
     return "–" if x is None else f"{100 * x:.{digits}f} %".replace(".", ",")
 
@@ -250,7 +263,8 @@ UPDATED: str | None = None  # date of the last ingest, set by build()
 CLUB_ABBR: dict[tuple[str, str], str] = {}
 
 
-NAV = (("politici", "index.html", "Politici"), ("spektrum", "spektrum/index.html", "Spektrum"),
+NAV = (("politici", "index.html", "Politici"), ("strany", "strany/index.html", "Strany"),
+       ("spektrum", "spektrum/index.html", "Spektrum"),
        ("metodika", "metodika.html", "Metodika"))
 
 
@@ -377,7 +391,7 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
     out = Path(out)
     if out.exists():
         shutil.rmtree(out)
-    for d in ("p", "v", "spektrum", "static"):
+    for d in ("p", "v", "spektrum", "strany", "static"):
         (out / d).mkdir(parents=True)
     static = resources.files("poliwiki").joinpath("static")
     for name in ("style.css", "votes.js", "search.js"):
@@ -433,10 +447,16 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
 
     links_from_p = {pid: f"{slug[pid]}.html" for pid in people}
     links_from_s = {pid: f"../p/{slug[pid]}.html" for pid in people}
+    today = datetime.now().date().isoformat()
+    totals = person_totals(conn, terms, people)
+    members = party_memberships(conn, people, today)
+    photos = best_photos(conn)
 
     index_rows = []
     for pid, r in people.items():
-        html_body, meta = profile(conn, r, sources[pid], terms, ideal, term_clubs, fits, all_names, links_from_p)
+        html_body, meta = profile(conn, r, sources[pid], terms, ideal, term_clubs, fits, all_names, links_from_p,
+                                  members.get(pid, []), photos.get(pid), today)
+        meta.update(totals.get(pid, {}))
         name = person_name(r)
         (out / "p" / f"{slug[pid]}.html").write_text(page(f"{name} · Czech PoliWiki", html_body, 1,
                                                          f"Hlasování, kluby a předložené návrhy: {name}"), "utf-8")
@@ -449,13 +469,113 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
     index_rows.sort(key=lambda x: (fold(x["f"]), fold(x["n"])))
     write_index(out, index_rows)
     write_spectrum_pages(out, terms, ideal, term_clubs, fits, all_names, links_from_s)
+    write_party_pages(out, members, {r["s"]: r for r in index_rows}, slug, people)
     (out / "metodika.html").write_text(page("Metodika · Czech PoliWiki", methodology(fits, terms), 0,
                                             "Jak se počítají údaje o hlasování a umístění na spektru", "metodika"), "utf-8")
     (out / ".nojekyll").write_text("")
     log.info("site: %d profiles written to %s", len(people), out)
 
 
-def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
+LAW_TYPES = ("Návrh zákona", "Vládní návrh zákona")
+
+
+def person_totals(conn, terms, people) -> dict[int, dict]:
+    """Index columns per person: law proposals presented and lifetime absence.
+
+    b  = bills ("návrhy zákonů") where the person is one of the listed
+         proposers; every co-proposer counts the bill once. bg = of those,
+         government bills presented as a member of the government. None for
+         people without a Sněmovna or Senát mandate (the EP has no such prints).
+    ab = (absent + excused) / all recorded votes, over every chamber and term
+         in the data; ax / ae = absent / excused counts, ar = votes.
+    """
+    out = defaultdict(dict)
+    drafts = defaultdict(Counter)
+    for pid, kind in conn.execute(
+            "SELECT s.person_id, b.proposer_kind FROM bill_sponsor s JOIN bill b ON b.id=s.bill_id"
+            f" WHERE s.person_id IS NOT NULL AND b.bill_type IN ({','.join('?' * len(LAW_TYPES))})", LAW_TYPES):
+        drafts[pid][kind] += 1
+    domestic = {pid for pid, in conn.execute("SELECT DISTINCT person_id FROM mandate WHERE chamber IN ('psp','senat')")}
+    for pid in people:
+        if pid in domestic:
+            out[pid]["b"] = sum(drafts[pid].values())
+            out[pid]["bg"] = drafts[pid]["government"]
+    cnt = defaultdict(Counter)
+    for t in terms:
+        for pid, st in t.stats.items():
+            cnt[pid].update(st["counts"])
+    for pid, c in cnt.items():
+        rows = sum(c.values())
+        if pid in people and rows:
+            out[pid].update(ab=round((c["absent"] + c["excused"]) / rows, 4), ax=c["absent"], ae=c["excused"], ar=rows)
+    return out
+
+
+# affiliation kinds that say which party someone belongs to, per chamber (see parties.py)
+PARTY_KIND = {"psp": "club", "senat": "party", "ep": "national_party"}
+PARTY_VIA = {"psp": "poslanecký klub", "senat": "politická příslušnost (senat.cz)", "ep": "národní strana (EP)"}
+
+
+def party_memberships(conn, people, today: str) -> dict[int, list[dict]]:
+    """pid -> party memberships recorded during their mandates, newest first."""
+    mand = defaultdict(list)
+    for pid, ch, start, end in conn.execute("SELECT person_id, chamber, start_date, end_date FROM mandate"):
+        mand[(pid, ch)].append((start or "0000", end or "9999"))
+    out = defaultdict(list)
+    for a in conn.execute(
+            "SELECT * FROM affiliation WHERE (chamber='psp' AND kind='club') OR (chamber='senat' AND kind='party')"
+            " OR (chamber='ep' AND kind='national_party') ORDER BY start_date"):
+        pid, ch = a["person_id"], a["chamber"]
+        if pid not in people:
+            continue
+        p = party_of(a["org_name"], a["org_abbr"])
+        if not p:
+            continue
+        start, end = a["start_date"] or "0000", a["end_date"] or "9999"
+        # a membership is current while it is open and the person still holds a seat in that chamber
+        seat_now = any(s <= today <= e for s, e in mand[(pid, ch)])
+        current = end >= today and seat_now
+        if ch == "senat":   # read from the profile as of the senator's last vote: ends with the mandate
+            current = seat_now
+            end = "9999" if seat_now else max((e for _, e in mand[(pid, ch)]), default=end)
+        out[pid].append({"key": p[0], "abbr": p[1], "name": p[2], "chamber": ch, "start": a["start_date"],
+                         "end": None if end == "9999" else end, "current": current})
+    for v in out.values():
+        v.sort(key=lambda m: (m["current"], m["end"] or "9999", m["start"] or ""), reverse=True)
+    return out
+
+
+PHOTO_ORDER = {"psp": 0, "senat": 1, "ep": 2}
+
+
+def best_photos(conn) -> dict[int, sqlite3.Row]:
+    """The portrait from the person's most recent mandate."""
+    out = {}
+    for r in conn.execute(
+            "SELECT ph.*, (SELECT max(coalesce(m.start_date, '')) FROM mandate m WHERE m.person_id=ph.person_id"
+            " AND m.chamber=ph.source) AS last FROM photo ph"):
+        cur = out.get(r["person_id"])
+        if cur is None or (r["last"] or "", -PHOTO_ORDER[r["source"]]) > (cur["last"] or "", -PHOTO_ORDER[cur["source"]]):
+            out[r["person_id"]] = r
+    return out
+
+
+def initials(r) -> str:
+    return "".join((x or "")[:1] for x in (r["given_name"], r["family_name"])).upper() or "?"
+
+
+def portrait(r, photo) -> str:
+    """Official portrait linked from the source's server; neutral initials when there is none
+    or it fails to load. The image is shown whole, never cropped (psp.cz terms forbid edits)."""
+    ph = f'<div class="ph ph-none" aria-hidden="true"{" hidden" if photo else ""}>{e(initials(r))}</div>'
+    if not photo:
+        return f'<figure class="portrait">{ph}</figure>'
+    return (f'<figure class="portrait"><img src="{e(photo["url"])}" alt="{e(person_name(r))}" loading="lazy" decoding="async"'
+            f' referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false;this.parentNode.querySelector(\'figcaption\').hidden=true">'
+            f'{ph}<figcaption>{e(photo["credit"])}</figcaption></figure>')
+
+
+def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links, parties=(), photo=None, today=None):
     pid = r["id"]
     mandates = conn.execute(
         "SELECT * FROM mandate WHERE person_id=? ORDER BY start_date", (pid,)).fetchall()
@@ -476,16 +596,26 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
             cur_label = CLUB_ABBR.get((a["chamber"], a["org_name"]), cur_club)
             club_chamber = a["chamber"]
 
-    b = [f'<h1>{e(full_name(r))}</h1>']
+    today = today or datetime.now().date().isoformat()
+    party = parties[0] if parties else None
+    b = [f'<div class="phead">{portrait(r, photo)}<div class="phead-txt"><h1>{e(full_name(r))}</h1>']
     facts = []
-    if r["birth_date"]:
-        facts.append(f"narozen/a {r['birth_date'][:4]}")
+    if r["death_date"] and (a := age(r["birth_date"], r["death_date"])) is not None:
+        facts.append(f'zemřel/a {fmt_date(r["death_date"])} ve věku {years(a)}')
+    elif (a := age(r["birth_date"], today)) is not None:
+        facts.append(f'<span title="narozen/a {fmt_date(r["birth_date"])}">{years(a)}</span>')
     facts.append(", ".join(f"{CHAMBER[c]}" for c in chambers))
-    if cur_club:
-        facts.append(e(cur_club))
+    club_party = party_of(cur_club) if cur_club else None
+    if cur_club and party and club_party and club_party[0] == party["key"]:
+        facts.append(f'<a href="../strany/{party["key"]}.html">{e(cur_club)}</a>')
+    else:
+        if cur_club:
+            facts.append(e(cur_club))
+        if party:
+            facts.append(f'{"strana" if party["current"] else "dříve"} <a href="../strany/{party["key"]}.html">{e(party["abbr"])}</a>')
     b.append(f'<p class="lede">{" · ".join(facts)}</p>')
     b.append('<p class="sources">Oficiální profil: ' + ", ".join(
-        f'<a href="{e(u)}">{SOURCE_LABEL[s]}</a>' for s, (_, u) in srcs.items() if u) + "</p>")
+        f'<a href="{e(u)}">{SOURCE_LABEL[s]}</a>' for s, (_, u) in srcs.items() if u) + "</p></div></div>")
     b.append('<nav class="toc"><a href="#mandaty">Mandáty a kluby</a><a href="#hlasovani">Hlasování</a>'
              '<a href="#spektrum">Spektrum</a><a href="#navrhy">Předložené návrhy</a><a href="#seznam">Všechna hlasování</a></nav>')
 
@@ -499,7 +629,7 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
         b.append('<div class="tablewrap"><table><thead><tr><th>Orgán</th><th>Druh</th><th>Název</th><th>Od</th><th>Do</th></tr></thead><tbody>')
         for a in affs:
             b.append(f"<tr><td>{CHAMBER_SHORT[a['chamber']]}</td><td>{AFF_LABEL.get(a['kind'], a['kind'])}</td>"
-                     f"<td>{e(a['org_name'])}</td><td>{fmt_date(a['start_date'])}</td><td>{fmt_date(a['end_date']) or ('dosud' if a['start_date'] else '')}</td></tr>")
+                     f"<td>{party_link(a)}</td><td>{fmt_date(a['start_date'])}</td><td>{fmt_date(a['end_date']) or ('dosud' if a['start_date'] else '')}</td></tr>")
         b.append("</tbody></table></div>")
         if any(a["chamber"] == "senat" and a["kind"] == "club" and not a["start_date"] for a in affs):
             b.append('<p class="note">Senát zveřejňuje jen současný klub bez data vstupu.</p>')
@@ -555,8 +685,13 @@ def profile(conn, r, srcs, terms, ideal, term_clubs, fits, names, links):
     b.append("</section>")
 
     # bills
+    laws = [bl for bl in bills if bl["bill_type"] in LAW_TYPES]
+    gov = sum(bl["proposer_kind"] == "government" for bl in laws)
     b.append(f'<section id="navrhy"><h2>Předložené návrhy ({len(bills)})</h2>')
     if bills:
+        b.append(f'<p>Návrhy zákonů: <strong>{len(laws)}</strong>'
+                 + (f' (z toho {gov} vládních, předložených jako člen vlády)' if gov else '')
+                 + f'. Ostatní tisky (mezinárodní smlouvy, zprávy, interpelace aj.): {len(bills) - len(laws)}.</p>')
         b.append('<details open>' if len(bills) <= 10 else f'<details><summary>Zobrazit všech {len(bills)} návrhů</summary>')
         b.append('<div class="tablewrap"><table><thead><tr><th>Tisk</th><th>Název</th><th>Předloženo</th><th>Druh</th></tr></thead><tbody>')
         for bl in bills:
@@ -610,9 +745,18 @@ Které konkrétní návrhy zazněly, uvádí jen záznam hlasování a stenozáz
             "h": chambers, "hc": list(dict.fromkeys(m["chamber"] for m in current))}
     if last_club:
         meta["kl"] = last_club
+    if party:
+        meta["pk"], meta["pn"] = party["key"], party["abbr"]
     if club_chamber:
         meta["kh"] = club_chamber
     return "\n".join(b), meta
+
+
+def party_link(a) -> str:
+    """Organisation name, linked to its party page when the row is a party membership."""
+    if PARTY_KIND.get(a["chamber"]) == a["kind"] and (p := party_of(a["org_name"], a["org_abbr"])):
+        return f'<a href="../strany/{p[0]}.html">{e(a["org_name"])}</a>'
+    return e(a["org_name"])
 
 
 def write_index(out: Path, rows) -> None:
@@ -630,21 +774,108 @@ Bez hodnocení a pořadí, s odkazy na oficiální záznamy.</p>
 <div class="searchrow"><input type="search" id="q" placeholder="Hledat jméno nebo klub" aria-label="Hledat jméno nebo klub" autocomplete="off">
 <label class="switch"><input type="checkbox" id="active" checked> <span>jen současní</span></label></div>
 <div class="seg" id="chamber" role="group" aria-label="Komora">{seg}</div>
-<div class="chips-wrap"><span class="chips-label">Klub / skupina</span><div class="chips" id="clubs" role="group" aria-label="Klub nebo skupina"></div></div>
+<div class="chips-wrap"><span class="chips-label">Klub / skupina<a class="chips-more" href="strany/index.html">Přehled stran</a></span><div class="chips" id="clubs" role="group" aria-label="Klub nebo skupina"></div></div>
 </section>
 <div class="listhead"><p id="count" class="muted" aria-live="polite"></p>
 <label class="sortsel">Řadit <select id="sort" aria-label="Řadit podle">
 <option value="name">podle příjmení</option><option value="club">podle klubu</option><option value="chamber">podle komory</option>
+<option value="drafts">podle počtu návrhů zákonů</option><option value="absence">podle nepřítomnosti</option>
 </select></label></div>
 <div class="tablewrap card"><table id="people"><thead><tr>
 <th aria-sort="ascending"><button type="button" data-sort="name">Jméno</button></th>
 <th><button type="button" data-sort="chamber">Komora</button></th>
 <th><button type="button" data-sort="club">Klub / skupina</button></th>
+<th class="num"><button type="button" data-sort="drafts" title="Předložené návrhy zákonů">Návrhy</button></th>
+<th class="num"><button type="button" data-sort="absence" title="Podíl hlasování, u kterých chyběl/a">Nepřítomnost</button></th>
 <th>Mandáty</th></tr></thead><tbody></tbody></table>
 <p id="empty" class="empty" hidden>Nikdo neodpovídá filtrům. <button type="button" id="reset" class="linklike">Zrušit filtry</button></p></div>
+<p class="note"><strong>Návrhy</strong>: návrhy zákonů ve Sněmovně (sněmovní tisky z období v datech), u kterých je osoba uvedena mezi navrhovateli.
+Každý spolunavrhovatel má návrh započtený celý; vládní návrhy se počítají členovi vlády, který je předkládá.
+Senátorům se počítají jen návrhy, které došly do Sněmovny. Europoslanci návrhy zákonů nepředkládají (–).
+<strong>Nepřítomnost</strong>: podíl hlasování, u kterých byl/a nepřítomen/a nebo omluven/a, ze všech hlasování během všech jeho/jejích mandátů v datech
+(najetím zobrazíte rozdělení). Přítomnost bez stisknutí tlačítka se nepočítá jako nepřítomnost.
+Metodika: <a href="metodika.html#pocet-navrhu">návrhy</a>, <a href="metodika.html#nepritomnost">nepřítomnost</a>.</p>
 <script id="data" type="application/json">{json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")}</script>
 <script src="static/search.js"></script>"""
     (out / "index.html").write_text(page("Czech PoliWiki", body, 0, "Neutrální přehled hlasování českých politiků"), "utf-8")
+
+
+def fmt_absence(r) -> str:
+    return pct(r["ab"]) if "ab" in r else "–"
+
+
+def write_party_pages(out: Path, members, rows_by_slug, slug, people) -> None:
+    """strany/index.html and one page per party: who belongs to it now and who did
+    during a mandate in the data. Counts only; parties are listed alphabetically."""
+    by_party = defaultdict(list)       # key -> [(pid, membership)]
+    names = {}
+    for pid, ms in members.items():
+        seen = set()
+        for m in ms:
+            # one row per person, chamber and party: the most recent membership
+            if (m["key"], m["chamber"]) in seen:
+                continue
+            seen.add((m["key"], m["chamber"]))
+            by_party[m["key"]].append((pid, m))
+            names.setdefault(m["key"], (m["abbr"], m["name"]))
+    items = []
+    for key in sorted(by_party, key=lambda k: fold(names[k][0])):
+        abbr, full = names[key]
+        ms = by_party[key]
+        now = Counter(m["chamber"] for _, m in ms if m["current"])
+        ever = len({pid for pid, _ in ms})
+        items.append(f'<tr><td class="name"><a href="{key}.html">{e(abbr)}</a>'
+                     + (f'<div class="muted small">{e(full)}</div>' if full != abbr else "") + "</td>"
+                     + "".join(f'<td class="num">{now[c] or ""}</td>' for c in ("psp", "senat", "ep"))
+                     + f'<td class="num">{ever}</td></tr>')
+        sections = []
+        current_ids = {pid for pid, m in ms if m["current"]}
+        for title, cur in (("Současní členové", True), ("Dříve (během mandátu v datech)", False)):
+            # someone in the party now is not listed again among former members
+            rows = [(pid, m) for pid, m in ms if m["current"] == cur and (cur or pid not in current_ids)]
+            if not rows:
+                continue
+            rows.sort(key=lambda x: (PHOTO_ORDER[x[1]["chamber"]], fold(people[x[0]]["family_name"]), fold(people[x[0]]["given_name"])))
+            trs = []
+            for pid, m in rows:
+                r = rows_by_slug[slug[pid]]
+                b = "–" if r.get("b") is None else str(r["b"])
+                span = f'{fmt_date(m["start"]) or "?"} – {fmt_date(m["end"]) or "dosud"}'
+                trs.append(f'<tr><td class="name"><a href="../p/{slug[pid]}.html">{e(r["n"])}</a></td>'
+                           f'<td><span class="badge">{CHAMBER_SHORT[m["chamber"]]}</span></td>'
+                           f'<td class="muted small">{e(span)}</td><td class="num">{b}</td>'
+                           f'<td class="num" title="{absence_title(r)}">{fmt_absence(r)}</td></tr>')
+            sections.append(f'<h2>{title} ({len(rows)})</h2><div class="tablewrap card"><table class="members"><thead><tr>'
+                            '<th>Jméno</th><th>Komora</th><th>Členství</th><th class="num">Návrhy zákonů</th><th class="num">Nepřítomnost</th>'
+                            f'</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
+        via = sorted({m["chamber"] for _, m in ms}, key=PHOTO_ORDER.get)
+        stats = "".join(f'<div class="stat"><span class="big">{now[c]}</span><span>{label}</span></div>'
+                        for c, label in (("psp", "poslanců"), ("senat", "senátorů"), ("ep", "europoslanců")) if now[c])
+        body = f"""<p class="crumbs"><a href="index.html">Strany</a></p>
+<h1>{e(full)}</h1>
+<p class="lede">{e(abbr) + " · " if abbr != full else ""}{ever} {"politik" if ever == 1 else "politici" if 2 <= ever <= 4 else "politiků"} v datech.
+Členství podle: {", ".join(f"{CHAMBER_SHORT[c]} – {PARTY_VIA[c]}" for c in via)}.</p>
+<div class="stats">{stats}</div>
+{"".join(sections)}
+<p class="note">Návrhy a nepřítomnost se počítají stejně jako v <a href="../index.html">přehledu politiků</a>
+(<a href="../metodika.html#strany">metodika</a>). Pořadí je podle komory a příjmení, ne podle čísel.</p>"""
+        (out / "strany" / f"{key}.html").write_text(page(f"{abbr} · Czech PoliWiki", body, 1,
+                                                         f"Členové strany {full} ve Sněmovně, Senátu a EP", "strany"), "utf-8")
+    body = f"""<h1>Strany</h1>
+<p class="lede">Politické strany, ke kterým politici v datech patří nebo patřili. Ve Sněmovně podle poslaneckého klubu,
+v Senátu podle politické příslušnosti uvedené na senat.cz, v EP podle národní strany. Řazeno abecedně.
+<a href="../metodika.html#strany">Jak se členství určuje</a></p>
+<div class="tablewrap card"><table class="parties"><thead><tr><th>Strana</th><th class="num">Sněmovna</th><th class="num">Senát</th>
+<th class="num">EP</th><th class="num">Celkem v datech</th></tr></thead><tbody>{"".join(items)}</tbody></table></div>
+<p class="note">Čísla v komorách jsou současní členové; „celkem“ zahrnuje i bývalé členy z období v datech.</p>"""
+    (out / "strany" / "index.html").write_text(page("Strany · Czech PoliWiki", body, 1,
+                                                    "Politické strany a jejich členové ve Sněmovně, Senátu a EP", "strany"), "utf-8")
+
+
+def absence_title(r) -> str:
+    if "ab" not in r:
+        return ""
+    return e(f'nepřítomen/a {r["ax"]}, omluven/a {r["ae"]} z {r["ar"]} hlasování')
 
 
 def write_spectrum_pages(out: Path, terms, ideal, term_clubs, fits, names, links) -> None:

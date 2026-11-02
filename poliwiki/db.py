@@ -23,7 +23,7 @@ def connect(path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
 
 
 # columns added after the first release; CREATE TABLE IF NOT EXISTS leaves old databases without them
-ADDED_COLUMNS = {"vote_event": ("agenda_id", "agenda", "stage", "motion", "key_vote")}
+ADDED_COLUMNS = {"vote_event": ("agenda_id", "agenda", "stage", "motion", "key_vote"), "person": ("death_date",)}
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -33,6 +33,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
             if c not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {c} TEXT")
     conn.commit()
+
+
+def set_photo(conn: sqlite3.Connection, person_id: int, source: str, url: str, credit: str,
+              as_of: str | None) -> None:
+    """Record a source's portrait of a person, keeping the one from the newest mandate."""
+    conn.execute(
+        "INSERT INTO photo (person_id, source, url, credit, as_of) VALUES (?,?,?,?,?)"
+        " ON CONFLICT (person_id, source) DO UPDATE SET url=excluded.url, credit=excluded.credit, as_of=excluded.as_of"
+        " WHERE coalesce(excluded.as_of, '') >= coalesce(photo.as_of, '')",
+        (person_id, source, url, credit, as_of),
+    )
 
 
 def fold(s: str | None) -> str:
@@ -110,7 +121,7 @@ def _update_person(conn, pid: int, **attrs) -> None:
             conn.execute(f"UPDATE person SET {col}=? WHERE id=? AND {col} IS NULL", (val, pid))
 
 
-PERSON_FK_TABLES = ("person_source", "mandate", "affiliation", "bill_sponsor", "vote")
+PERSON_FK_TABLES = ("person_source", "mandate", "affiliation", "bill_sponsor", "vote", "photo")
 
 
 def merge_persons(conn: sqlite3.Connection, keep: int, drop: int) -> None:

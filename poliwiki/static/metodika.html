@@ -41,6 +41,24 @@ Nepřihlášený poslanec je „omluven/a“, pokud jeho omluva pokrývá čas h
 <li>Evropský parlament: „nepřítomen/a“ je doplněno jen u českých europoslanců (u nich známe data mandátu).</li>
 </ul>
 
+<h3 id="nepritomnost">Nepřítomnost v přehledu politiků</h3>
+<p>Jedno číslo za celou dobu v datech: počet hlasování, u kterých byl/a politik/čka <em>nepřítomen/a</em> nebo <em>omluven/a</em>,
+dělený počtem všech hlasování během všech jeho/jejích mandátů (Sněmovna, Senát i EP, všechna období v datech). Zmatečná hlasování se nepočítají.
+„Přítomen/a a nehlasoval/a“ se jako nepřítomnost nepočítá. Rozdělení na nepřítomen/a a omluven/a se zobrazí po najetí na číslo.
+Omluvy nejsou mezi komorami srovnatelné: Sněmovna eviduje omluvy písemně předem, Senát a EP jinak, proto web obojí sčítá a neporovnává.</p>
+
+<h2 id="strany">Strany</h2>
+<p>Příslušnost ke straně se bere z toho, co zdroje samy uvádějí: ve Sněmovně poslanecký klub (kluby se tvoří podle stran),
+v Senátu „politická příslušnost“ z profilu na senat.cz (senátorské kluby často sdružují více stran, proto se nepoužívají),
+v EP národní strana, kterou eviduje Evropský parlament. Různé zápisy téže strany (např. „ODS“ a „Občanská demokratická strana“)
+se slučují podle pevného seznamu v <code>poliwiki/parties.py</code>; nic dalšího se neslučuje. Nezařazení a senátoři bez politické
+příslušnosti nejsou u žádné strany. Volební koalice (např. SPOLU) nejsou stranou a samostatnou stránku nemají.</p>
+
+<h2 id="foto">Fotografie</h2>
+<p>Portréty jsou oficiální fotografie z psp.cz, senat.cz a Evropského parlamentu. Web je nekopíruje ani neupravuje, jen na ně odkazuje
+a uvádí zdroj, jak ho podmínky těchto webů požadují (u Sněmovny včetně autora fotografie). Kde fotografie není, zobrazí se iniciály.
+Použije se fotografie z komory, kde má osoba nejnovější mandát.</p>
+
 <h2 id="klub">Hlasování jinak než většina klubu</h2>
 <p>Pro každé hlasování a každý klub (v EP politickou skupinu) spočítáme, jak hlasovali jeho členové, kteří zvolili pro, proti nebo zdržel/a se.
 Pokud jedna volba má víc než polovinu těchto hlasů a hlasovali alespoň tři členové, je to <em>většina klubu</em>. Jinak se hlasování do ukazatele nezapočítá.
@@ -53,6 +71,12 @@ Senát zveřejňuje jen současný klub senátora bez data vstupu, proto se v Se
 <p>Seznam sněmovních tisků, u kterých je osoba uvedena jako předkladatel. U vládních návrhů psp.cz uvádí členy vlády, kteří návrh předkládají,
 takže se objevují u ministrů. Druh předkladatele (vláda, poslanci, Senát, kraj) je odvozen z číselníku tisků; psp.cz jeho popis nezveřejňuje,
 přiřazení je proto ověřeno na datech a popsáno v kódu.</p>
+<h3 id="pocet-navrhu">Počet návrhů zákonů v přehledu</h3>
+<p>Počet sněmovních tisků druhu „návrh zákona“ nebo „vládní návrh zákona“ z období v datech, u kterých psp.cz uvádí danou osobu
+mezi navrhovateli. Poslanecký návrh podaný skupinou poslanců se započte každému z nich celý (žádné dělení podle počtu podpisů).
+Vládní návrh se počítá členovi vlády, kterého psp.cz uvádí jako předkladatele; v přehledu je zvlášť uvedeno, kolik takových návrhů je.
+Mezinárodní smlouvy, zprávy a interpelace se nepočítají (na profilu jsou v seznamu tisků). Senátorům se počítají jen návrhy, které
+došly do Sněmovny jako tisk. Evropský parlament návrhy zákonů od jednotlivých poslanců nepřijímá, europoslanci proto mají „–“.</p>
 
 <h2 id="spektrum">Umístění na spektru</h2>
 <p>Pozice na spektru vzniká výhradně z jmenovitých hlasování: dva členové, kteří hlasují často stejně, jsou blízko sebe.
