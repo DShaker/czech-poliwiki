@@ -23,6 +23,7 @@ from pathlib import Path
 from .db import fold
 from .parties import party_of
 from .sources.senat import PROCEDURAL_MOTIONS
+from . import visits
 
 log = logging.getLogger(__name__)
 
@@ -265,7 +266,7 @@ CLUB_ABBR: dict[tuple[str, str], str] = {}
 
 NAV = (("politici", "index.html", "Politici"), ("strany", "strany/index.html", "Strany"),
        ("spektrum", "spektrum/index.html", "Spektrum"),
-       ("metodika", "metodika.html", "Metodika"))
+       ("metodika", "metodika.html", "Metodika"), ("navstevnost", "navstevnost.html", "Návštěvnost"))
 
 
 def page(title: str, body: str, depth: int, description: str = "", nav: str = "politici") -> str:
@@ -281,6 +282,7 @@ def page(title: str, body: str, depth: int, description: str = "", nav: str = "p
 <title>{e(title)}</title>
 <meta name="description" content="{e(description)}">
 <link rel="stylesheet" href="{up}static/style.css">
+{visits.script_tag()}
 </head>
 <body>
 <header class="top"><div class="top-in"><a href="{up}index.html" class="brand"><span class="mark" aria-hidden="true">PW</span>Czech PoliWiki</a>
@@ -289,7 +291,7 @@ def page(title: str, body: str, depth: int, description: str = "", nav: str = "p
 {body}
 </main>
 <footer><div class="foot-in"><p>Data z oficiálních zdrojů (psp.cz, senat.cz, data.europarl.europa.eu), bez hodnocení a pořadí. {updated}</p>
-<p><a href="{up}metodika.html">Jak se čísla počítají</a> · <a href="https://github.com/DShaker/czech-poliwiki">Zdrojový kód</a></p></div></footer>
+<p><a href="{up}metodika.html">Jak se čísla počítají</a> · <a href="{up}navstevnost.html#soukromi">Soukromí</a> · <a href="https://github.com/DShaker/czech-poliwiki">Zdrojový kód</a></p></div></footer>
 </body>
 </html>
 """
@@ -379,7 +381,7 @@ def scatter_chart(points, names, links) -> str:
 
 # ---------------------------------------------------------------- build
 
-def build(conn: sqlite3.Connection, out: str | Path) -> None:
+def build(conn: sqlite3.Connection, out: str | Path, visits_file: str | Path = visits.DEFAULT_FILE) -> None:
     global UPDATED
     last = conn.execute("SELECT max(finished_at) FROM ingest_run").fetchone()[0]
     CLUB_ABBR.clear()
@@ -472,6 +474,8 @@ def build(conn: sqlite3.Connection, out: str | Path) -> None:
     write_party_pages(out, members, {r["s"]: r for r in index_rows}, slug, people)
     (out / "metodika.html").write_text(page("Metodika · Czech PoliWiki", methodology(fits, terms), 0,
                                             "Jak se počítají údaje o hlasování a umístění na spektru", "metodika"), "utf-8")
+    (out / "navstevnost.html").write_text(page("Návštěvnost · Czech PoliWiki", visits_page(visits.load(visits_file)), 0,
+                                               "Kolik lidí stránky navštívilo a jak se návštěvy počítají", "navstevnost"), "utf-8")
     (out / ".nojekyll").write_text("")
     log.info("site: %d profiles written to %s", len(people), out)
 
@@ -921,6 +925,31 @@ Správně předpovídá {pct(c2.get('correct'))} hlasů pro/proti (jedna dimenze
 <p class="lede">Umístění členů každé komory zvlášť, odvozené jen z hlasování. Pozice z různých komor ani období nejsou
 na stejné stupnici a nedají se porovnávat. <a href="../metodika.html#spektrum">Metodika</a></p>
 <ul class="list">{''.join(items)}</ul>""", 1, nav="spektrum"), "utf-8")
+
+
+def visits_page(v: dict | None) -> str:
+    if v:
+        tiles = "".join(f'<div class="stat"><span class="big">{thousands(v[k])}</span><span>{label}</span></div>'
+                        for k, label in (("all", "celkem"), ("month", "za posledních 30 dní"), ("week", "za posledních 7 dní")))
+        when = v.get("fetched_at", "")
+        numbers = f"""<div class="stats">{tiles}</div>
+<p class="note">Posledních 30 a 7 dní včetně dneška (UTC). Stav k {fmt_date(when)} {when[11:16]} UTC; čísla se obnovují jednou denně spolu s daty.
+Živé statistiky: <a href="https://{e(v.get("code", visits.code()))}.goatcounter.com">{e(v.get("code", visits.code()))}.goatcounter.com</a>.</p>"""
+    else:
+        numbers = '<p class="muted">Čísla zatím nejsou k dispozici. Objeví se po prvním denním obnovení s nastaveným počítadlem.</p>'
+    return f"""<section class="hero"><h1>Návštěvnost</h1>
+<p class="lede">Kolik návštěv stránky měly. Každá stránka se jednomu návštěvníkovi započítá nejvýš jednou za 8 hodin,
+takže opakované načítání čísla nezvyšuje.</p>
+{numbers}</section>
+<section id="soukromi" class="method"><h2>Soukromí</h2>
+<p>Návštěvy počítá <a href="https://www.goatcounter.com">GoatCounter</a>, open-source počítadlo s daty na serverech
+v Německu a Finsku. Stránky nepoužívají cookies ani nic jiného neukládají do vašeho zařízení, proto se neptají na souhlas.</p>
+<p>Ukládají se jen souhrnné počty: která stránka, odkud návštěvník přišel, prohlížeč, systém, jazyk, šířka obrazovky
+a země odvozená z IP adresy, každý údaj v samostatné tabulce, takže je nejde propojit. IP adresa ani hlavička prohlížeče
+se nikam nezapisují. K poznání, že jde o téhož návštěvníka, slouží jen náhodný identifikátor držený 8 hodin v paměti.
+Z dat nejde poznat, kdo jste, a nepoužívají se k reklamě. Blokátory reklam počítadlo často blokují, takže čísla jsou
+spíš nižší než skutečnost.</p>
+<p>Podrobnosti: <a href="https://www.goatcounter.com/help/privacy">zásady ochrany soukromí GoatCounteru</a>.</p></section>"""
 
 
 def _se_pair(f) -> str:

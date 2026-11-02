@@ -61,8 +61,15 @@ jobs:
           path: data/cache
           key: http-${{ steps.month.outputs.month }}-${{ github.run_id }}
       - name: Spectrum and site
+        env:
+          # GoatCounter site code (repo variable, default dshaker01) and a
+          # read-only API token (repo secret). Without the token the visits tab
+          # says "no data yet"; the build never fails on it.
+          GOATCOUNTER_CODE: ${{ vars.GOATCOUNTER_CODE || 'dshaker01' }}
+          GOATCOUNTER_API_KEY: ${{ secrets.GOATCOUNTER_API_KEY }}
         run: |
           python -m poliwiki spectrum
+          python -m poliwiki visits
           python -m poliwiki site --out site
           python -m poliwiki stats
           du -sh site

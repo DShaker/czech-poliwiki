@@ -226,6 +226,37 @@ def test_build_writes_party_pages_photos_and_age(conn, tmp_path):
     assert "Současní členové" in party
 
 
+def test_visits_tab_and_tracking(conn, tmp_path, monkeypatch):
+    from poliwiki import visits
+    _chamber(conn, n_members=6, n_votes=20)
+    monkeypatch.delenv("GOATCOUNTER_CODE", raising=False)
+    monkeypatch.delenv("GOATCOUNTER_API_KEY", raising=False)
+    vf = tmp_path / "visits.json"
+    assert visits.update(vf) is None          # no token: skip quietly
+    site.build(conn, tmp_path / "a", visits_file=vf)
+    html = (tmp_path / "a" / "navstevnost.html").read_text("utf-8")
+    assert "zatím nejsou" in html and 'id="soukromi"' in html
+    assert "goatcounter" not in (tmp_path / "a" / "index.html").read_text("utf-8")
+
+    monkeypatch.setenv("GOATCOUNTER_CODE", "czech-poliwiki")
+    monkeypatch.setenv("GOATCOUNTER_API_KEY", "k")
+    calls = []
+
+    def fake_total(c, key, start, end):
+        calls.append((start, end))
+        return {6: 120, 29: 3400}.get((end - start).days, 12345)
+    monkeypatch.setattr(visits, "_total", fake_total)
+    from datetime import datetime, timezone
+    data = visits.update(vf, datetime(2026, 11, 2, 17, 20, tzinfo=timezone.utc))
+    assert (data["all"], data["month"], data["week"]) == (12345, 3400, 120)
+    assert calls[2][0] == datetime(2026, 10, 27, tzinfo=timezone.utc) and calls[2][1].hour == 18
+    site.build(conn, tmp_path / "b", visits_file=vf)
+    html = (tmp_path / "b" / "navstevnost.html").read_text("utf-8")
+    assert "12 345" in html and "czech-poliwiki.goatcounter.com" in html
+    idx = (tmp_path / "b" / "index.html").read_text("utf-8")
+    assert 'data-goatcounter="https://czech-poliwiki.goatcounter.com/count"' in idx
+
+
 def test_photo_credits_survive_single_timeouts(conn, monkeypatch):
     from poliwiki import http, photos
     from poliwiki.sources.psp import PHOTO_CREDIT
