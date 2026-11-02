@@ -224,3 +224,19 @@ def test_build_writes_party_pages_photos_and_age(conn, tmp_path):
     assert all('class="ph ph-none"' in h and "<img src" not in h for h in other)
     party = (out / "strany" / "a.html").read_text()
     assert "Současní členové" in party
+
+
+def test_photo_credits_survive_single_timeouts(conn, monkeypatch):
+    from poliwiki import http, photos
+    from poliwiki.sources.psp import PHOTO_CREDIT
+    for i in range(4):
+        pid = db.resolve_person(conn, "psp", str(i), given_name=f"P{i}", family_name="X", country="CZE")
+        db.set_photo(conn, pid, "psp", f"https://x/{i}.jpg", PHOTO_CREDIT, "2025")
+    jpeg = b"<dc:creator><rdf:Seq><rdf:li>Autor</rdf:li></rdf:Seq></dc:creator>"
+
+    def fake_get(url, **kw):
+        if url.endswith("1.jpg"):
+            raise TimeoutError("timed out")
+        return jpeg
+    monkeypatch.setattr(http, "get", fake_get)
+    assert photos.credit_psp(conn) == 3
