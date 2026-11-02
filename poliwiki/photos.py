@@ -20,6 +20,7 @@ from .sources.psp import PHOTO_CREDIT
 log = logging.getLogger(__name__)
 
 _CREATOR = re.compile(rb"<dc:creator>\s*<rdf:Seq>(.*?)</rdf:Seq>", re.S)
+MAX_FAILURES_IN_ROW = 5
 _LI = re.compile(rb"<rdf:li[^>]*>(.*?)</rdf:li>", re.S)
 
 
@@ -34,18 +35,23 @@ def xmp_creator(jpeg: bytes) -> str | None:
 
 def credit_psp(conn: sqlite3.Connection) -> int:
     rows = conn.execute("SELECT person_id, url FROM photo WHERE source='psp' AND credit=?", (PHOTO_CREDIT,)).fetchall()
-    done = 0
+    done = failed_in_row = 0
     for pid, url in rows:
         try:
-            body = http.get(url, retries=2, timeout=30)
+            body = http.get(url, retries=2, timeout=60)
+            failed_in_row = 0
         except http.NotFound:
             log.warning("psp photo missing: %s", url)
             conn.execute("DELETE FROM photo WHERE person_id=? AND source='psp'", (pid,))
             continue
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-            # psp.cz refuses most cloud IP ranges; keep the short credit and stop trying
-            log.warning("psp.cz unreachable (%s); photo credits left without author", exc)
-            break
+            # single timeouts happen (psp.cz is slow); keep the short credit for this one.
+            # Several in a row means psp.cz refuses us (e.g. cloud IP ranges): stop trying.
+            failed_in_row += 1
+            if failed_in_row >= MAX_FAILURES_IN_ROW:
+                log.warning("psp.cz unreachable (%s); remaining photo credits left without author", exc)
+                break
+            continue
         author = xmp_creator(body)
         if author:
             conn.execute("UPDATE photo SET credit=? WHERE person_id=? AND source='psp'",

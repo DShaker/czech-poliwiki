@@ -255,3 +255,19 @@ def test_visits_tab_and_tracking(conn, tmp_path, monkeypatch):
     assert "12 345" in html and "czech-poliwiki.goatcounter.com" in html
     idx = (tmp_path / "b" / "index.html").read_text("utf-8")
     assert 'data-goatcounter="https://czech-poliwiki.goatcounter.com/count"' in idx
+
+
+def test_photo_credits_survive_single_timeouts(conn, monkeypatch):
+    from poliwiki import http, photos
+    from poliwiki.sources.psp import PHOTO_CREDIT
+    for i in range(4):
+        pid = db.resolve_person(conn, "psp", str(i), given_name=f"P{i}", family_name="X", country="CZE")
+        db.set_photo(conn, pid, "psp", f"https://x/{i}.jpg", PHOTO_CREDIT, "2025")
+    jpeg = b"<dc:creator><rdf:Seq><rdf:li>Autor</rdf:li></rdf:Seq></dc:creator>"
+
+    def fake_get(url, **kw):
+        if url.endswith("1.jpg"):
+            raise TimeoutError("timed out")
+        return jpeg
+    monkeypatch.setattr(http, "get", fake_get)
+    assert photos.credit_psp(conn) == 3
