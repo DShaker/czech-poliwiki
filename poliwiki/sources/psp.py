@@ -18,7 +18,7 @@ import zipfile
 from collections import defaultdict
 from pathlib import Path
 
-from ..db import Run, resolve_person
+from ..db import Run, resolve_person, set_photo
 
 log = logging.getLogger(__name__)
 BASE_URL = "https://www.psp.cz"
@@ -29,6 +29,14 @@ VOTE_CODES = {
 }
 OUTCOMES = {"A": "passed", "R": "rejected"}
 TYP_KLUB = "1"
+# Terms of use of the Chamber's photos (psp.cz/sqw/hp.sqw?k=1506): credit
+# "Foto: Kancelář Poslanecké sněmovny / author", no alterations. The author is
+# added by `poliwiki photos`, which reads it from the image's XMP metadata.
+PHOTO_CREDIT = "Foto: Kancelář Poslanecké sněmovny"
+
+
+def photo_url(term: str, id_osoba: str) -> str:
+    return f"{BASE_URL}/eknih/cdrom/{term}ps/eknih/{term}ps/poslanci/i{id_osoba}.jpg"
 TYP_SNEMOVNA = "11"
 TYP_KRAJ = "8"
 
@@ -96,7 +104,7 @@ def _person(conn, d: PspData, id_osoba: str) -> int:
         conn, "psp", id_osoba,
         given_name=col(r, 3), family_name=col(r, 2),
         title_before=col(r, 1), title_after=col(r, 4),
-        birth_date=_birth(col(r, 5)), gender=gender, country="CZE",
+        birth_date=_birth(col(r, 5)), death_date=cz_date(col(r, 8)), gender=gender, country="CZE",
         url=f"{BASE_URL}/sqw/detail.sqw?id={id_osoba}",
     )
 
@@ -132,6 +140,9 @@ def ingest_members(conn: sqlite3.Connection, d: PspData) -> dict[str, int]:
                 " VALUES (?,?,?,?,?,?,?)",
                 (pid, "psp", d.term, start, end, kraj_name, f"poslanec:{id_pos}"),
             )
+        if col(p, 14) == "1":   # poslanec.foto: psp.cz has a portrait for this term
+            set_photo(conn, pid, "psp", photo_url(d.term, id_osoba), PHOTO_CREDIT,
+                      (seat_dates.get(id_osoba) or [(d.term, None)])[0][0] or d.term)
         kand = d.organy.get(p[3])
         if kand:
             conn.execute(

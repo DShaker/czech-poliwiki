@@ -15,12 +15,14 @@ from datetime import date
 from urllib.parse import urlencode
 
 from .. import http
-from ..db import Run, resolve_person
+from ..db import Run, resolve_person, set_photo
 
 log = logging.getLogger(__name__)
 API = "https://data.europarl.europa.eu/api/v2"
 TERM_YEARS = {9: range(2019, 2025), 10: range(2024, date.today().year + 1)}
 TERM_START = {9: "2019-07-02", 10: "2024-07-16"}
+# EP legal notice: reuse allowed if the whole item is reproduced and the source is acknowledged.
+PHOTO_CREDIT = "© Evropská unie – zdroj: Evropský parlament"
 OUTCOME = {"ADOPTED": "passed", "REJECTED": "rejected"}
 
 
@@ -92,6 +94,8 @@ def ingest_meps(conn: sqlite3.Connection, term: int) -> dict[str, int]:
                              family_name=d.get("familyName"), birth_date=d.get("bday"),
                              gender=gender, country="CZE", url=url)
         ids[mid] = pid
+        if d.get("img"):
+            set_photo(conn, pid, "ep", d["img"], PHOTO_CREDIT, TERM_START[term])
         for ms in d.get("hasMembership", []):
             period = ms.get("memberDuring", {})
             start, end = period.get("startDate"), period.get("endDate")

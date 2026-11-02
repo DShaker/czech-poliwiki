@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS person (
     title_before TEXT,
     title_after  TEXT,
     birth_date   TEXT,          -- ISO date, NULL when unknown
+    death_date   TEXT,          -- ISO date when the source records one
     gender       TEXT,          -- 'M' / 'F' / NULL
     country      TEXT           -- ISO 3166 alpha-3, 'CZE' for Czech politicians
 );
@@ -107,6 +108,17 @@ CREATE TABLE IF NOT EXISTS vote (
     PRIMARY KEY (vote_event_id, person_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ix_vote_person ON vote(person_id);
+
+-- Official portrait, one per person and source. The site links to the image on
+-- the source's own server (no copies are made) and shows the credit it asks for.
+CREATE TABLE IF NOT EXISTS photo (
+    person_id  INTEGER NOT NULL REFERENCES person(id),
+    source     TEXT NOT NULL,       -- 'psp' | 'senat' | 'ep'
+    url        TEXT NOT NULL,
+    credit     TEXT NOT NULL,       -- attribution line required by the source
+    as_of      TEXT,                -- start of the mandate the photo belongs to; newest wins
+    PRIMARY KEY (person_id, source)
+);
 
 CREATE TABLE IF NOT EXISTS ingest_run (
     id          INTEGER PRIMARY KEY,

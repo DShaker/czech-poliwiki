@@ -22,11 +22,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import http
-from ..db import Run, fold, merge_persons, resolve_person
+from ..db import Run, fold, merge_persons, resolve_person, set_photo
 from .psp import PspData, _person, col, cz_date
 
 log = logging.getLogger(__name__)
 SENAT = "https://www.senat.cz"
+# senat.cz reserves all rights to its content; the site only links to the
+# portrait on senat.cz and names the source.
+PHOTO_CREDIT = "Foto: Senát PČR"
 TYP_SENAT = "79"
 TYP_SEN_KLUB = "90"
 PRAGUE = ZoneInfo("Europe/Prague")
@@ -191,6 +194,8 @@ def parse_profile(page: str) -> dict:
     t = re.sub(r"\s+", " ", t)
     if m := re.search(r"Politická příslušnost (.+?) Obvod", t):
         out["party"] = m.group(1).strip()
+    if m := re.search(r'<img src="(/images/senatori/[^"]+)"', page):
+        out["photo"] = m.group(1)
     if m := re.search(r"Obvod č\. (\d+)", t):
         out["district"] = m.group(1)
     if m := re.search(r"Zvolen za (.+?) v roce (\d{4})", t):
@@ -214,6 +219,14 @@ def _profile_rows(conn, person_id: int, pid_web: str, term: int, on: date) -> No
         (person_id, "senat", str(term), p["start"], p.get("end"),
          f"obvod {p['district']}" if p.get("district") else None, f"senat:{pid_web}"),
     )
+    if not p.get("party") and (not p.get("end") or p["end"] >= date.today().isoformat()):
+        # profiles "as of" a past day leave out the party; the current profile has it
+        now = parse_profile(http.get(f"{SENAT}/senatori/index.php?lng=cz&par_3={pid_web}", cache=False)
+                            .decode("utf-8", "replace"))
+        if now.get("start") == p["start"]:
+            p["party"] = now.get("party")
+    if p.get("photo"):
+        set_photo(conn, person_id, "senat", SENAT + p["photo"], PHOTO_CREDIT, p["start"])
     if p.get("club"):
         conn.execute("DELETE FROM affiliation WHERE person_id=? AND chamber='senat' AND kind='club'"
                      " AND org_id LIKE 'senat:%'", (person_id,))

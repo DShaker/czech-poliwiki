@@ -18,6 +18,7 @@ scripts/get_raw.sh                 # psp.cz dumps from the raw-data branch
 python -m poliwiki psp --term 2025 # current Sněmovna term (2021 also works)
 python -m poliwiki senat           # current Senát term
 python -m poliwiki ep --term 10    # current European Parliament term
+python -m poliwiki photos          # photographer credits for psp.cz portraits (needs psp.cz)
 python -m poliwiki stats
 python -m poliwiki spectrum        # ideal points per chamber and term
 python -m poliwiki site --out site # static site
@@ -37,6 +38,15 @@ Output: `data/poliwiki.sqlite`. Raw HTTP responses are cached in `data/cache`.
   context), spectrum position, sponsored prints and a searchable list of every
   vote linking to the official record. The vote list is loaded from
   `p/<…>.json` (one character per vote) plus a shared `v/<chamber>-<term>.json`.
+- `index.html` also shows, per person, the number of law proposals they are listed
+  as proposer of (co-proposers count in full) and the lifetime share of votes
+  absent or excused, across every chamber and term in the data.
+- `strany/`: one page per political party with current and former members. Party
+  = Sněmovna club, Senate "politická příslušnost", EP national party; spellings are
+  merged only via the list in `poliwiki/parties.py`.
+- Profiles show the official portrait, linked from psp.cz / senat.cz / europarl
+  (never copied), with the credit each source requires; `poliwiki photos` adds the
+  photographer from the psp.cz image metadata. Initials when there is no photo.
 - `spektrum/`: per chamber and term, all members on both dimensions.
 - `metodika.html`: the method, in Czech, with the fit statistics of the current run.
 

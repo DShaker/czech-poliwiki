@@ -54,6 +54,7 @@ jobs:
           python -m poliwiki psp --term 2025
           python -m poliwiki senat
           python -m poliwiki ep --term 10
+          python -m poliwiki photos
       - uses: actions/cache/save@v6
         if: always()
         with:

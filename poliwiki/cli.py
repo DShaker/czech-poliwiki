@@ -26,6 +26,7 @@ def main(argv=None) -> None:
     sen.add_argument("--term", type=int, help="Senate term; default: the one senat.cz shows now")
     sen.add_argument("--cached", action="store_true", help="reuse cached RSS feeds")
 
+    sub.add_parser("photos", help="complete psp.cz photo credits with the author from each image")
     sub.add_parser("spectrum", help="fit ideal points for every chamber and term")
     site = sub.add_parser("site", help="build the static site")
     site.add_argument("--out", default="site")
@@ -44,6 +45,9 @@ def main(argv=None) -> None:
     elif a.cmd == "senat":
         from .sources import senat as m
         m.ingest(conn, a.psp_raw, a.term, refresh=not a.cached)
+    elif a.cmd == "photos":
+        from . import photos
+        photos.credit_psp(conn)
     elif a.cmd == "spectrum":
         from . import spectrum
         spectrum.run_all(conn)
